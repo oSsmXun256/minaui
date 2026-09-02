@@ -1,5 +1,5 @@
 /*!
- * MinaUI v0.1.0
+ * MinaUI v0.2.0
  * A flexible, glass-ready CSS UI system for the web.
  * Copyright (c) 2026 oSsmXun
  * Released under the MIT License.
@@ -389,23 +389,36 @@ a.mina-link { text-decoration: underline; text-underline-offset: .18em; }
    SURFACES, CARDS, MEDIA
    ========================================================================== */
 
-/* Surface/elevation contract:
-   - .mina-glass / .mina-card / .mina-panel keep MinaUI's original frosted
-     glass surface as the default visual language.
-   - .mina-glass--liquid opts into the transparent WebGL lens surface.
-   - .mina-card--static and .mina-card--interactive express interaction intent
-     without changing the shared glass identity.
-   - --mina-shadow-sm is for compact/supporting surfaces and --mina-shadow-lg
-     is for transient or strongly elevated layers. */
-.mina-glass, .mina-card, .mina-panel {
+/* Surface/elevation contract (three distinct surface levels):
+   - .mina-card / .mina-panel are the standard translucent surfaces:
+     background + border + shadow only. No backdrop-filter, so pages can
+     stack dozens of them without multiplying GPU layers.
+   - .mina-glass is the explicit opt-in to frosted glass (real
+     backdrop-filter). Combine it when a surface really sits over busy
+     imagery: `class="mina-card mina-glass"`.
+   - .mina-glass--liquid swaps frosted glass for the WebGL lens surface.
+   - .mina-card--static / .mina-card--interactive express interaction intent
+     without changing the shared surface identity.
+   - --mina-shadow-sm is for compact/supporting surfaces, --mina-shadow-md is
+     the standard surface height and --mina-shadow-lg is for transient or
+     strongly elevated layers. */
+.mina-card, .mina-panel {
+  border: 1px solid var(--mina-glass-border);
+  border-radius: var(--mina-radius-xl);
+  background: var(--mina-glass-bg);
+  box-shadow: var(--mina-shadow-md);
+}
+.mina-glass {
   border: 1px solid var(--mina-glass-border);
   border-radius: var(--mina-radius-xl);
   background: var(--mina-glass-bg);
   box-shadow: var(--mina-shadow-md);
   -webkit-backdrop-filter: blur(var(--mina-glass-blur)) saturate(var(--mina-glass-saturate));
   backdrop-filter: blur(var(--mina-glass-blur)) saturate(var(--mina-glass-saturate));
+  /* containment (paint/layout clipping) without a forced compositor layer;
+     backdrop-filter already promotes the element when it is actually used */
+  contain: layout paint;
 }
-.mina-glass { contain: layout paint; transform: translateZ(0); }
 /* Opt-in compositor-layer promotion for special cases (dragging surfaces,
    janky scroll areas). Do NOT apply site-wide; each layer costs memory. */
 .mina-gpu { transform: translateZ(0); will-change: transform; }
@@ -539,8 +552,9 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
   outline: 0;
   color: var(--mina-fg);
   background: var(--mina-glass-bg);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
+  /* no backdrop-filter: inputs multiply easily and blur-per-field is a
+     classic GPU-layer budget killer. Add .mina-glass explicitly when a
+     field really floats over imagery. */
   transition: border-color var(--mina-trans-fast), box-shadow var(--mina-trans-fast), background var(--mina-trans-fast);
 }
 .mina-textarea { min-height: 7rem; resize: vertical; }
@@ -557,7 +571,7 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 .mina-input-group > :first-child { border-top-left-radius: var(--mina-radius-md); border-bottom-left-radius: var(--mina-radius-md); }
 .mina-input-group > :last-child { border-top-right-radius: var(--mina-radius-md); border-bottom-right-radius: var(--mina-radius-md); }
 .mina-input-group__addon { display: inline-flex; align-items: center; padding-inline: .85rem; border: 1px solid var(--mina-border); color: var(--mina-fg-muted); background: var(--mina-surface-muted); font-size: .875rem; white-space: nowrap; }
-.mina-input-shell { display: flex; height: 2.875rem; align-items: center; gap: .625rem; padding-inline: .9rem; border: 1px solid var(--mina-border); border-radius: var(--mina-radius-pill); color: var(--mina-fg); background: var(--mina-glass-bg); -webkit-backdrop-filter: blur(var(--mina-glass-blur)); backdrop-filter: blur(var(--mina-glass-blur)); }
+.mina-input-shell { display: flex; height: 2.875rem; align-items: center; gap: .625rem; padding-inline: .9rem; border: 1px solid var(--mina-border); border-radius: var(--mina-radius-pill); color: var(--mina-fg); background: var(--mina-glass-bg); }
 .mina-input-shell:focus-within { border-color: var(--mina-primary); box-shadow: var(--mina-focus-ring); }
 .mina-input-shell input { flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; color: inherit; background: transparent; font: inherit; }
 .mina-input-shell input::placeholder { color: var(--mina-fg-subtle); }
@@ -792,10 +806,20 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
    Missing attribute preserves the original full glass visuals. Use balanced
    or performance explicitly when a page needs a lower-cost mode.
    "quality" keeps every effect, including animated blur.
+   "balanced" keeps the static look of quality but swaps animated
+   backdrop-filter keyframes for cheap opacity fades and lets MinaGlass
+   render with its cheaper 9-tap shader.
    "performance" cuts the expensive stuff on low-end hardware:
    smaller/no blur, cheaper surfaces, no glow, no infinite decorative loops,
    no animated backdrop-filter. prefers-reduced-motion still wins overall.
    ========================================================================== */
+
+/* balanced: same resting visuals as quality, no animated backdrop-filter.
+   The two keyframes below animate backdrop-filter per frame; replacing them
+   with an opacity fade keeps entrances smooth without the per-frame blur
+   re-render. MinaGlass reads the same attribute for its 9-tap shader. */
+[data-mina-performance="balanced"] .mina-glass-blur-in { animation: mina-fade-in .5s ease both; }
+[data-mina-performance="balanced"] .mina-backdrop-blur-in { animation: mina-fade-in .5s ease both; }
 
 [data-mina-performance="performance"] {
   --mina-glass-blur: 8px;
@@ -834,8 +858,9 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
   backdrop-filter: none;
 }
 /* Infinite decorative animations are pure GPU burn; disable them but keep
-   functional state feedback (spin loaders, transitions). Glow colors are
-   already removed via --mina-shadow-glow above. */
+   functional state feedback (spin loaders, transitions). The skeleton
+   shimmer is replaced by its static background so placeholders stay
+   visible. Glow colors are already removed via --mina-shadow-glow above. */
 [data-mina-performance="performance"] .mina-pulse,
 [data-mina-performance="performance"] .mina-anim-pulse,
 [data-mina-performance="performance"] .mina-glow,
@@ -846,6 +871,10 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 [data-mina-performance="performance"] .mina-text-shimmer {
   animation: none;
 }
+[data-mina-performance="performance"] .mina-skeleton::after { animation: none; }
+
+/* Body scroll lock applied by minaui.js on <html> while a modal is open */
+html[data-mina-modal-open] { overflow: hidden; }
 
 /* ==========================================================================
    EFFECT API
