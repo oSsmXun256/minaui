@@ -18,7 +18,7 @@
 const LIQUID_SELECTOR = '.mina-glass--liquid, .mina-glass-liquid, .aqua-glass-liquid';
 const FALLBACK_CLASS_NATIVE = 'mina-liquid-native';
 const FALLBACK_CLASS_STATIC = 'mina-liquid-static';
-// Balanced default budget (~1920x1080). Retina phones/laptops downscale the
+// Default pixel budget (~1920x1080). Retina phones/laptops downscale the
 // internal back buffer only; the CSS size always matches the viewport.
 const DEFAULT_MAX_PIXEL_COUNT = 1920 * 1080;
 const MAX_TEXTURE_EDGE = 2048;
@@ -36,8 +36,8 @@ class MinaGlass {
         this.config = config;
 
         // Quality tier: 'high' | 'balanced' | 'performance'. Defaults to
-        // balanced; inherits <html data-mina-performance="..."> when the
-        // option is not given explicitly.
+        // high to preserve MinaUI's original liquid-glass look; inherits
+        // <html data-mina-performance="..."> when not given explicitly.
         const attrQuality = document.documentElement ? document.documentElement.getAttribute('data-mina-performance') : null;
         this.quality = MinaGlass.normalizeQuality(options.quality !== undefined ? options.quality : attrQuality);
 
@@ -98,7 +98,9 @@ class MinaGlass {
     static normalizeQuality(value) {
         if (value === 'high' || value === 'quality') return 'high';
         if (value === 'performance' || value === 'low' || value === 'fast') return 'performance';
-        return 'balanced';
+        // Preserve MinaUI's original 25-tap liquid-glass look unless a page
+        // explicitly opts into a lower-cost performance tier.
+        return 'high';
     }
 
     static normalizeBackend(value) {

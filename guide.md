@@ -43,23 +43,23 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 
 `mina-card--interactive` はホバー時にわずかに浮き、`mina-card--glow` はブランド色の光を追加します。背景写真や WebGL を使う場合は、背景レイヤーを `mina-backdrop`、前景を `mina-shell` の子要素にしてください。
 
-Surfaceの使い分けは、通常面を `mina-card` / `mina-panel`、ぼかしが必要な面だけを `mina-glass` 併記とします。標準の高さは `--mina-shadow-md`、補助面は `mina-shadow-sm`、モーダルなど一時的な前景は `mina-shadow-lg` です。`mina-card--interactive` は操作対象にだけ付けます。
+Surfaceの使い分けは、MinaUI標準のfrosted glassを `mina-card` / `mina-panel` で使い、WebGLの液体ガラスが必要な面だけ `mina-glass--liquid` を併記します。標準の高さは `--mina-shadow-md`、補助面は `mina-shadow-sm`、モーダルなど一時的な前景は `mina-shadow-lg` です。`mina-card--interactive` は操作対象にだけ付けます。
 
-### すりガラス（backdrop-filter）はオプトイン
+### すりガラスと液体ガラス
 
-`.mina-card` / `.mina-panel` は半透明の面を保ちますが、デフォルトでは backdrop-filter を要求しません。すりガラスの屈折表現が要る要素にだけ `.mina-glass` を追加します。
+`.mina-card` / `.mina-panel` はデフォルトでMinaUIのすりガラス表現を使います。WebGL2の屈折表現が要る要素には `.mina-glass mina-glass--liquid` を追加し、`minaui.glass.js` の `MinaGlass.autoInit()` を呼びます。
 
 ```html
-<article class="mina-card mina-glass">このカードだけblurされる</article>
+<article class="mina-card mina-glass mina-glass--liquid">WebGL2で液体ガラスになる</article>
 ```
 
-カードやパネルを多数並べるページでは、これだけでSafari・低性能端末の描画負荷が大きく下がります。コンポジットレイヤーの明示的な昇格が必要な特殊ケースは `.mina-gpu` を使ってください。
+低性能端末では `data-style="flat"` / `data-style="solid"` またはPerformance Modeを明示的に使えます。コンポジットレイヤーの明示的な昇格が必要な特殊ケースは `.mina-gpu` を使ってください。
 
 ## パフォーマンス設計
 
 ### Performance Mode
 
-`<html data-mina-performance="...">` で3段階を指定できます。省略時は `balanced` です。
+`<html data-mina-performance="...">` で3段階を指定できます。省略時は、従来どおり完全なglass表現を維持します。
 
 ```html
 <html data-mina-performance="performance">

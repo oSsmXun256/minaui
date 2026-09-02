@@ -57,19 +57,17 @@ function assert(condition, message) {
 
 const surfaceBlock = css.match(/\.mina-glass,\s*\.mina-card,\s*\.mina-panel\s*\{[^}]*\}/);
 assert(surfaceBlock, "Surface block (.mina-glass, .mina-card, .mina-panel) is missing");
-assert(!surfaceBlock[0].includes("backdrop-filter"), ".mina-card/.mina-panel must not request backdrop-filter by default");
+assert(surfaceBlock[0].includes("backdrop-filter"), "MinaUI default surfaces must preserve the original frosted glass");
 
 const glassBlock = css.match(/\.mina-glass\s*\{[^}]*\}/);
-assert(glassBlock && glassBlock[0].includes("backdrop-filter"), ".mina-glass must provide opt-in backdrop-filter");
-assert(!/\.mina-glass\s*\{[^}]*translateZ/.test(css), ".mina-glass must not force GPU layer promotion (moved to .mina-gpu)");
-assert(!/\.mina-glass\s*\{[^}]*contain:\s*(paint|layout paint)/.test(css), ".mina-glass must not use paint containment (clips shadows)");
+assert(glassBlock && glassBlock[0].includes("contain: layout paint"), ".mina-glass must preserve the original glass containment contract");
+assert(glassBlock && glassBlock[0].includes("translateZ(0)"), ".mina-glass must preserve the original compositor layer");
 assert(css.includes(".mina-gpu"), "Opt-in .mina-gpu layer-promotion utility is missing");
 
 const requiredPerfCss = [
   "--mina-card-bg",
   "--mina-z-backdrop",
   "--mina-z-glass-canvas",
-  "[data-mina-performance=\"quality\"]",
   "[data-mina-performance=\"performance\"]",
   "--mina-liquid-native-bg",
   "@media (hover: hover) and (pointer: fine)",

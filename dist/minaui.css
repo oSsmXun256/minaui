@@ -53,9 +53,8 @@
   --mina-border: rgba(255, 255, 255, 0.15);
   --mina-border-strong: rgba(255, 255, 255, 0.27);
   --mina-border-subtle: rgba(255, 255, 255, 0.08);
-  /* Glass surfaces: .mina-card / .mina-panel are opaque-ish by default and do
-     NOT request backdrop-filter. Only .mina-glass opts into real blur.
-     Add .mina-glass alongside .mina-card to restore the frosted look. */
+  /* Fallback-only surface token used when liquid WebGL/native blur is
+     unavailable or performance mode is explicitly selected. */
   --mina-card-bg: rgba(24, 19, 42, 0.8);
   --mina-glass-bg: rgba(20, 15, 35, 0.48);
   --mina-liquid-native-bg: rgba(24, 19, 42, 0.3);
@@ -101,9 +100,9 @@
      backdrop-deep < backdrop < glass-canvas < base content < sticky <
      dropdown < drawer < overlay < modal < toast < tooltip.
      Sites should consume these variables instead of hard-coding z-index. */
-  --mina-z-backdrop-deep: -3;
-  --mina-z-backdrop: -2;
-  --mina-z-glass-canvas: -1;
+  --mina-z-backdrop-deep: -2;
+  --mina-z-backdrop: -1;
+  --mina-z-glass-canvas: 0;
   --mina-z-base: 0;
   --mina-z-sticky: 20;
   --mina-z-dropdown: 100;
@@ -376,28 +375,22 @@ a.mina-link { text-decoration: underline; text-underline-offset: .18em; }
    ========================================================================== */
 
 /* Surface/elevation contract:
-   - .mina-card / .mina-panel = base surface + --mina-shadow-md, no blur.
-   - .mina-glass = opt-in blur; pair it with a surface when frosted glass is
-     actually needed.
+   - .mina-glass / .mina-card / .mina-panel keep MinaUI's original frosted
+     glass surface as the default visual language.
+   - .mina-glass--liquid opts into the transparent WebGL lens surface.
+   - .mina-card--static and .mina-card--interactive express interaction intent
+     without changing the shared glass identity.
    - --mina-shadow-sm is for compact/supporting surfaces and --mina-shadow-lg
-     is for transient or strongly elevated layers.
-   NOTE: no backdrop-filter here on purpose —
-   every blurred element forces an extra compositing pass (very expensive in
-   Safari/WebKit and on low-end devices). Real blur is opt-in via .mina-glass:
-   <div class="mina-card mina-glass"> */
+     is for transient or strongly elevated layers. */
 .mina-glass, .mina-card, .mina-panel {
   border: 1px solid var(--mina-glass-border);
   border-radius: var(--mina-radius-xl);
-  background: var(--mina-card-bg);
-  box-shadow: var(--mina-shadow-md);
-}
-/* Opt-in frosted surface: the only default component that requests blur. */
-.mina-glass {
   background: var(--mina-glass-bg);
+  box-shadow: var(--mina-shadow-md);
   -webkit-backdrop-filter: blur(var(--mina-glass-blur)) saturate(var(--mina-glass-saturate));
   backdrop-filter: blur(var(--mina-glass-blur)) saturate(var(--mina-glass-saturate));
-  contain: layout;
 }
+.mina-glass { contain: layout paint; transform: translateZ(0); }
 /* Opt-in compositor-layer promotion for special cases (dragging surfaces,
    janky scroll areas). Do NOT apply site-wide; each layer costs memory. */
 .mina-gpu { transform: translateZ(0); will-change: transform; }
@@ -431,7 +424,7 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 .mina-card__title { margin: 0; font-size: 1.125rem; font-weight: 750; }
 .mina-card__subtitle { margin: .25rem 0 0; color: var(--mina-fg-muted); font-size: .875rem; }
 .mina-panel { padding: var(--mina-space-6); }
-.mina-panel--accent { border-color: color-mix(in srgb, var(--mina-primary) 45%, transparent); background: linear-gradient(135deg, var(--mina-primary-soft), var(--mina-card-bg)); }
+.mina-panel--accent { border-color: color-mix(in srgb, var(--mina-primary) 45%, transparent); background: linear-gradient(135deg, var(--mina-primary-soft), var(--mina-glass-bg)); }
 .mina-panel--floating { position: absolute; z-index: var(--mina-z-sticky); max-height: 92vh; overflow-y: auto; border-radius: var(--mina-radius-2xl); color: var(--mina-fg); }
 .mina-cover { position: relative; min-height: 15rem; overflow: hidden; border-radius: var(--mina-radius-xl); background: var(--mina-surface-muted); }
 .mina-cover > img, .mina-cover > video { width: 100%; height: 100%; min-height: inherit; object-fit: cover; }
@@ -613,7 +606,7 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 .mina-list { display: flex; flex-direction: column; padding: 0; margin: 0; list-style: none; }
 .mina-list__item { display: flex; align-items: center; gap: var(--mina-space-3); padding: var(--mina-space-4) 0; border-bottom: 1px solid var(--mina-border-subtle); }
 .mina-list__item:last-child { border-bottom: 0; }
-.mina-table-wrap { overflow-x: auto; border: 1px solid var(--mina-border); border-radius: var(--mina-radius-lg); background: var(--mina-card-bg); }
+.mina-table-wrap { overflow-x: auto; border: 1px solid var(--mina-border); border-radius: var(--mina-radius-lg); background: var(--mina-glass-bg); }
 .mina-table { width: 100%; border-collapse: collapse; min-width: 32rem; font-size: .875rem; }
 .mina-table th, .mina-table td { padding: .8rem 1rem; border-bottom: 1px solid var(--mina-border-subtle); text-align: left; }
 .mina-table th { color: var(--mina-fg-subtle); font-size: .6875rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
@@ -781,8 +774,8 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 /* ==========================================================================
    PERFORMANCE MODE
    <html data-mina-performance="quality | balanced | performance">
-   Missing attribute behaves as "balanced": identical visuals, but animated
-   backdrop-filter already falls back to opacity (see MOTION utilities).
+   Missing attribute preserves the original full glass visuals. Use balanced
+   or performance explicitly when a page needs a lower-cost mode.
    "quality" keeps every effect, including animated blur.
    "performance" cuts the expensive stuff on low-end hardware:
    smaller/no blur, cheaper surfaces, no glow, no infinite decorative loops,
@@ -887,11 +880,7 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 .mina-glow-glass { animation: mina-glow-glass 2s ease-in-out infinite; }
 .mina-bounce { animation: mina-bounce 1s infinite; }
 .mina-bounce-in { animation: mina-bounce-in .6s cubic-bezier(.68,-.55,.265,1.55) both; }
-/* Animated backdrop-filter forces expensive re-filtering every frame. The
-   default (balanced) tier falls back to an opacity fade; opt in to the real
-   blur animation with data-mina-performance="quality". */
-.mina-glass-blur-in { animation: mina-fade-in .4s ease both; }
-[data-mina-performance="quality"] .mina-glass-blur-in { animation: mina-glass-blur-in .5s ease both; }
+.mina-glass-blur-in { animation: mina-glass-blur-in .5s ease both; }
 .mina-glass-shimmer, .mina-shimmer { background: linear-gradient(90deg, rgba(255,255,255,.06), rgba(255,255,255,.2) 50%, rgba(255,255,255,.06)); background-size: 1000px 100%; }
 .mina-glass-shimmer { animation: mina-glass-shimmer 2.5s linear infinite; }
 .mina-shimmer { animation: mina-shimmer 2.5s linear infinite; }
@@ -908,8 +897,7 @@ a.mina-card--interactive { display: flex; color: var(--mina-fg); text-decoration
 .mina-backdrop-blur { -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 .mina-backdrop-blur-md { -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
 .mina-backdrop-blur-lg { -webkit-backdrop-filter: blur(var(--mina-glass-blur)) saturate(var(--mina-glass-saturate)); backdrop-filter: blur(var(--mina-glass-blur)) saturate(var(--mina-glass-saturate)); }
-.mina-backdrop-blur-in { animation: mina-fade-in .4s ease both; }
-[data-mina-performance="quality"] .mina-backdrop-blur-in { animation: mina-backdrop-blur-in .5s ease both; }
+.mina-backdrop-blur-in { animation: mina-backdrop-blur-in .5s ease both; }
 .mina-transition-fast { transition-duration: .15s; transition-timing-function: ease; }
 .mina-transition-base { transition-duration: .3s; transition-timing-function: ease; }
 .mina-transition-slow { transition-duration: .5s; transition-timing-function: ease; }

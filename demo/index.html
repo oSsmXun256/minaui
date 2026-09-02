@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja" data-theme="dark" data-style="glass" data-accent="pink" data-mina-performance="balanced">
+<html lang="ja" data-theme="dark" data-style="glass" data-accent="pink" data-mina-performance="quality">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="../minaui.css">
 </head>
 <body>
+  <canvas id="mina-glcanvas" aria-hidden="true"></canvas>
   <div class="mina-shell">
     <main class="mina-container mina-container--wide">
       <section class="mina-section mina-stack mina-stack--8">
@@ -30,6 +31,32 @@
             <p class="mina-alert__message">通常の情報面はmina-card、ぼかしが必要な浮遊面だけmina-glassを追加します。Glowも操作対象に限定します。</p>
           </div>
         </div>
+
+        <section class="mina-stack mina-stack--4" aria-labelledby="liquid-heading">
+          <div class="mina-stack mina-stack--1">
+            <p class="mina-eyebrow mina-text-primary">WebGL liquid glass</p>
+            <h2 class="mina-h2" id="liquid-heading">OpenGL系の液体ガラスをそのまま確認</h2>
+            <p class="mina-text-muted">`.mina-glass--liquid`と`minaui.glass.js`を使う面だけ、背景の屈折・ぼかし・ハイライトをWebGL2で描画します。</p>
+          </div>
+          <div class="mina-grid mina-grid--2">
+            <article class="mina-card mina-glass mina-glass--liquid mina-card--static">
+              <div class="mina-card__header">
+                <span class="mina-badge mina-badge--glass">WebGL surface</span>
+                <h3 class="mina-card__title mina-mt-2">Liquid profile</h3>
+                <p class="mina-card__subtitle">背景の動きがレンズ越しに見える情報面</p>
+              </div>
+              <div class="mina-card__body"><p class="mina-text-muted">WebGL2対応環境ではMinaGlassがこの面の位置を追跡します。</p></div>
+            </article>
+            <article class="mina-card mina-glass mina-glass--liquid mina-card--interactive">
+              <div class="mina-card__header">
+                <span class="mina-badge mina-badge--primary">Interactive liquid</span>
+                <h3 class="mina-card__title mina-mt-2">Open activity</h3>
+                <p class="mina-card__subtitle">操作可能な液体ガラス面</p>
+              </div>
+              <div class="mina-card__body"><span class="mina-card__action">アクティビティを見る <span aria-hidden="true">→</span></span></div>
+            </article>
+          </div>
+        </section>
 
         <section class="mina-stack mina-stack--4" aria-labelledby="surface-heading">
           <div class="mina-stack mina-stack--1">
@@ -138,5 +165,18 @@
   </section>
 
   <script src="../minaui.js" defer></script>
+  <script src="../minaui.glass.js" defer></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function () {
+      if (window.MinaGlass) {
+        window.demoMinaGlass = window.MinaGlass.autoInit({
+          backend: 'auto',
+          quality: 'high',
+          maxCards: 2,
+          saturate: 1.2
+        });
+      }
+    });
+  </script>
 </body>
 </html>

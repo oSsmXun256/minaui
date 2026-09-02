@@ -116,19 +116,19 @@ MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 
 ## ガラスとパフォーマンス
 
-### Backdrop-filterはオプトイン
+### Default glassと軽量モード
 
-`.mina-card` / `.mina-panel` は半透明の面・ボーダー・影を持ちますが、**backdrop-filter を要求しません**。Backdrop BlurはSafari/WebKitで追加のレンダリングパスを必要とするため、カードを多数並べたページで最大のコスト要因になります。実際にすりガラス表現が必要な要素だけに `.mina-glass` を併記してください。
+`.mina-card` / `.mina-panel` はMinaUIの元の半透明glass面・ボーダー・影・backdrop-filterをデフォルトで維持します。OpenGL系の液体ガラスが必要な面には、さらに `.mina-glass--liquid` を付けて `minaui.glass.js` を読み込みます。
 
 ```html
-<!-- 軽量（blurなしの半透明面） -->
+<!-- MinaUI標準のfrosted glass -->
 <div class="mina-card">…</div>
 
-// すりガラスが必要な場所だけ
-<div class="mina-card mina-glass">…</div>
+<!-- WebGL2の液体ガラス -->
+<div class="mina-card mina-glass mina-glass--liquid">…</div>
 ```
 
-レイヤー昇格もデフォルトでは行いません。ドラッグ中のパネルなど特殊なケースのみ `.mina-gpu` を使ってください（各コンポジットレイヤーはメモリを消費します）。
+カードを多数並べる場合や低性能端末では `data-style="flat"` / `data-style="solid"`、または `data-mina-performance="performance"` を明示的に選んでください。レイヤー昇格が必要な特殊ケースのみ `.mina-gpu` を使います。
 
 ### Performance Mode
 
@@ -141,7 +141,7 @@ MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 | 値 | 挙動 |
 | :-- | :-- |
 | `quality` | 全エフェクト。animated backdrop-filterも有効 |
-| `balanced`（既定・属性省略時と同じ） | 見た目はqualityと同じ。ただしblurアニメーションはopacityフェードへフォールバック |
+| `balanced` | 見た目はqualityと同じ。ただしblurアニメーションはopacityフェードへフォールバック |
 | `performance` | blur縮小/無効化、glow・巨大影の削減、無限装飾アニメ停止、不透明度の高い面で可読性を維持 |
 
 `prefers-reduced-motion` の対応は従来どおり全モードで優先されます。
@@ -151,9 +151,9 @@ MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 サイト側でz-indexを場当たり的に調整しなくても済むよう、変数で契約を定義しています。
 
 ```css
---mina-z-backdrop-deep: -3;  /* .mina-shell::before のオーラ */
---mina-z-backdrop: -2;       /* .mina-backdrop の背景写真 */
---mina-z-glass-canvas: -1;   /* #mina-glcanvas（WebGL） */
+--mina-z-backdrop-deep: -2;  /* .mina-shell::before のオーラ */
+--mina-z-backdrop: -1;       /* .mina-backdrop の背景写真 */
+--mina-z-glass-canvas: 0;    /* #mina-glcanvas（WebGL） */
 /* 0 以降は通常コンテンツ → --mina-z-sticky → dropdown → drawer → overlay → modal → toast → tooltip */
 ```
 
@@ -164,7 +164,7 @@ WebGLキャンバスは `position: fixed` + `pointer-events: none` + コンテ�
 ```js
 const glass = MinaGlass.autoInit({
   background: "/images/bg.jpg", // レンズ源
-  quality: "balanced",          // high | balanced | performance
+  quality: "high",              // high | balanced | performance（既定）
   backend: "auto",              // auto | webgl | native | static
   renderScale: 1,               // devicePixelRatio への係数
   maxPixelCount: 1920 * 1080    // バックバッファのピクセル数上限
@@ -188,7 +188,7 @@ const glass = MinaGlass.autoInit({
 | quality | blurタップ数 | 彩度処理 | 用途 |
 | :-- | :-- | :-- | :-- |
 | `high` | 25 tap（5×5） | RGB↔HSL 往復（元の見た目） | 高性能GPU |
-| `balanced`（既定） | 9 tap（3×3）+ mipmap LOD | luma近似 | 既定 |
+| `balanced` | 9 tap（3×3）+ mipmap LOD | luma近似 | 負荷と品質のバランス |
 | `performance` | 1 tap（mipのみ） | luma近似 | 低性能端末 |
 
 ### renderScale / maxPixelCount
