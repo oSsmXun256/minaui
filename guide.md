@@ -1,6 +1,14 @@
 # MinaUI ガイド
 
-## 設計方針
+## 設計方針（Design Philosophy）
+
+MinaUIは「暗い背景に浮かぶ、質感のある面」を言語の核にします。派手さは面そのものと一次色(Pink / Violet)から生まれ、Glass・Glowは**効果のある場所にだけ**掛けます。実装上の判断は常に次の優先順位で行ってください。
+
+1. **面の階層を明確に** — 透過面 → すりガラス → 液体ガラスの3層を混ぜない。どの面も同じblurを掛けるのは階層の消失(とGPUの浪費)。
+2. **動きは意味を持つ** — hover・focus・開閉・状態遷移にだけmotionを使う。無限ループする装飾アニメはperformance modeで停止する。
+3. **操作対象は動作で示す** — `mina-card--interactive` は浮き上がり + 矢印 + focusリングで操作を伝える。見た目だけ変えて挙動を変えない。
+4. **キーボードと支援技術を第一級で** — タブ・ドロップダウン・モーダルの矢印 / Home / End / Escape / Tabトラップはライブラリが担当する。
+5. **性能は段階的に落とす** — `quality → balanced → performance` の3段階と、WebGLの `webgl → native → static` backendフォールバックで、見た目を壊さずに負荷を下げる。
 
 MinaUI のコンポーネントは、次の 3 層に分かれています。
 
@@ -25,10 +33,25 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 
 `mina-grid--auto` はカードの最小幅を保ちながら自動で列数を変えます。`mina-grid--2`〜`--4` は明示列、`mina-grid--sidebar` は本文とサイドバー用です。`mina-stack--1`〜`--8` と `mina-gap-*` で余白を調整できます。
 
+### responsive
+
+グリッドは `≤64rem` で2列、`≤48rem` で1列へ落ちます。`mina-grid--auto` を使えばブレークポイントを意識せずに済みます。コンテナは `≤48rem` でフル幅 + 1rem余白になります。ナビゲーションは `≤48rem` でリンク列が折り返し + 横スクロールに変わります。カードやモーダルの余白も同ブレークポイントで `--mina-space-6` → `--mina-space-4` に縮むため、サイト側で個別に上書きする必要はありません。モバイルで高さいっぱいのセクションを作るときは `mina-min-h-screen`(100svh併記) を使います。
+
 ## サーフェス
 
+### どの面をどこで使うか
+
+| 目的 | 使うクラス | 例 |
+| :-- | :-- | :-- |
+| 一覧・本文・情報表示の標準面 | `mina-card` / `mina-panel` | 記事カード、ダッシュボードのウィジェット |
+| 背景に写真やグラデーションが透けて見えるべき面 | `mina-card mina-glass` | ヒーローの帯、フローティングナビ、プレビューカード |
+| 主役の面に屈折エフェクトを与える(1ページに数枚まで) | `mina-card mina-glass mina-glass--liquid` | プロフィール面、注目コンテンツ |
+
 ```html
-<section class="mina-glass mina-glass--light mina-p-6">半透明の面</section>
+<section class="mina-glass mina-glass--light mina-p-6">すりガラスの面(透過面より目立たせたい帯など)</section>
+<article class="mina-card mina-card--static">
+  <div class="mina-card__body">読み取り専用の透過面。blurは掛からない</div>
+</article>
 <article class="mina-card mina-card--interactive mina-card--glow">
   <header class="mina-card__header">
     <h2 class="mina-card__title">プロフィール</h2>
@@ -43,17 +66,26 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 
 `mina-card--interactive` はホバー時にわずかに浮き、`mina-card--glow` はブランド色の光を追加します。背景写真や WebGL を使う場合は、背景レイヤーを `mina-backdrop`、前景を `mina-shell` の子要素にしてください。
 
-Surfaceの使い分けは、MinaUI標準のfrosted glassを `mina-card` / `mina-panel` で使い、WebGLの液体ガラスが必要な面だけ `mina-glass--liquid` を併記します。標準の高さは `--mina-shadow-md`、補助面は `mina-shadow-sm`、モーダルなど一時的な前景は `mina-shadow-lg` です。`mina-card--interactive` は操作対象にだけ付けます。
+高さの基準は `--mina-shadow-md`(標準面) → `--mina-shadow-lg`(モーダルなど一時的な前景) → `--mina-shadow-sm`(補助面) の3段階です。それ以上大きな影を作らないでください。
 
 ### すりガラスと液体ガラス
 
-`.mina-card` / `.mina-panel` はデフォルトでMinaUIのすりガラス表現を使います。WebGL2の屈折表現が要る要素には `.mina-glass mina-glass--liquid` を追加し、`minaui.glass.js` の `MinaGlass.autoInit()` を呼びます。
+v0.2.0 から `mina-card` / `mina-panel` はblurを持ちません(透過面)。blurが必要な面だけ `mina-glass` を追加します。WebGL2の屈折表現が要る要素には `mina-glass--liquid` を追加し、`minaui.glass.js` の `MinaGlass.autoInit()` を呼びます。
 
 ```html
 <article class="mina-card mina-glass mina-glass--liquid">WebGL2で液体ガラスになる</article>
 ```
 
 低性能端末では `data-style="flat"` / `data-style="solid"` またはPerformance Modeを明示的に使えます。コンポジットレイヤーの明示的な昇格が必要な特殊ケースは `.mina-gpu` を使ってください。
+
+**Composition例 — プロフィールページ**: 背景に `mina-backdrop`(写真) + `mina-scrim`(可読性マスク)。主役のプロフィール面は `mina-glass--liquid`。その下の写真サムネイルは `mina-media-tile`(透過面+角丸)。ボタン群は `mina-btn--glass`。この構成ならGPUレイヤーは液体ガラス1枚とボタン数個だけです。
+
+**悪い使用例**:
+
+- ページ内の全カードに `mina-glass` を付ける → 階層が消え、ブラーは「ないもの」として知覚され、GPUレイヤーだけが増える。標準は `mina-card`。
+- 見た目の演出だけ `mina-glass--liquid` を全面に敷く → WebGLはページ全面の背景を描画する仕組みのため、背景写真を渡さないとプレースホルダーが全面を覆う。
+- `mina-card--interactive` を全カードに付ける → 何がクリックできるのか分からなくなる。
+- `mina-gpu` や `translateZ(0)` を広範囲に使う → レイヤー昇格はメモリを直接消費する。ドロワー移動など一時的な用途に限る。
 
 ## パフォーマンス設計
 
@@ -65,18 +97,20 @@ Surfaceの使い分けは、MinaUI標準のfrosted glassを `mina-card` / `mina-
 <html data-mina-performance="performance">
 ```
 
-- `quality` — 全エフェクト。animated backdrop-filter（`mina-glass-blur-in` 等）も有効。
-- `balanced` — 見た目はqualityと同じですが、blurアニメーションはopacityフェードに置き換わります。
-- `performance` — blurの縮小・無効化、glow/巨大影の削減、無限系の装飾アニメ停止。面の不透明度を上げて可読性を維持します。
+- `quality` — 全エフェクト。animated backdrop-filter（`mina-glass-blur-in` 等）も有効。MinaGlassは25-tapシェーダー。
+- `balanced` — 静止見た目はqualityのまま、blurアニメーションをopacityフェードに置き換え、MinaGlassは9-tapシェーダーに切り替わります。
+- `performance` — blurの縮小・無効化、glow/巨大影の削減、無限系の装飾アニメ停止（skeletonのshimmerを含む）。面の不透明度を上げて可読性を維持します。
 
 `prefers-reduced-motion` が指定された環境では、Performance Modeより先にモーション全体が抑制されます。
 
-### MinaUI GlassとWebGL液体ガラス
+### MinaGlassとWebGL液体ガラス
 
 WebGLを使う液体ガラスは `.mina-glass--liquid` / `.mina-glass-liquid` を要素に付け、`minaui.glass.js` を読み込んで `MinaGlass.autoInit()` を呼びます。詳細なオプション（`quality` / `backend` / `renderScale` / `maxPixelCount`）とBackend選択（`webgl` / `native` / `static`）は README の「MinaGlass WebGL」を参照してください。
 
+- WebGL backendは液体ガラス面の外側も含め、**ページ全面を背景テクスチャで描画します**。必ず `background` を渡すか `uploadTexture()` を呼んでください。全面描画が不要なページでは `backend: "native"` を選ぶか、液体ガラス自体を使いません。
 - Safari / iOS では `auto` がCSS backdrop-filterの `native` backendを選び、固定キャンバスの座標追跡が非同期スクロールでずれる問題を回避します。
-- Firefox や WebGL2が使えない環境でも native/static へ自動フォールバックし、Context Lostでもページが壊れません。
+- Firefox や WebGL2が使えない環境でも native/static へ自動フォールバックし、Context Lostでもページが壊れません。復元時は自動でWebGLへ再構築します。
+- scrollはdirtyフラグ経由で1つのRAFにまとめられ、liquid要素自体のリサイズもResizeObserverで追跡されます。`destroy()` でリスナー・RAF・WebGLリソースがすべて解放されます。
 - Liquid Glass以外の `.mina-glass` 全般も Performance Mode の対象です（blur削減、影削減など）。
 
 ### Layer契約
@@ -163,7 +197,7 @@ Liquid Glass用キャンバスを含む重ね順は変数で定義されてい�
 </div>
 ```
 
-モーダルとドロワーは、MinaUI の JS が Escape、フォーカストラップ、起点へのフォーカス復帰、バックドロップ、`aria-expanded` / `aria-hidden` の切り替えを提供します。モーダルは `role="dialog"`、`aria-modal="true"`、`aria-labelledby` を付け、特殊な例外だけ `data-mina-focus-trap="false"` を指定してください。タブは左右（縦配置では上下）の矢印キーと `Home` / `End`、ドロップダウンは矢印キー・`Home` / `End`・`Escape` で操作できます。
+モーダルとドロワーは、MinaUI の JS が Escape、フォーカストラップ、起点へのフォーカス復帰、背面スクロールの固定、バックドロップ、`aria-expanded` / `aria-hidden` の切り替えを提供します。モーダルは `role="dialog"`、`aria-modal="true"`、`aria-labelledby` を付け、特殊な例外だけ `data-mina-focus-trap="false"` を指定してください。タブは左右（縦配置では上下）の矢印キーと `Home` / `End`、ドロップダウンは矢印キー・`Home` / `End`・`Escape` で操作できます。
 
 ```html
 <button class="mina-btn mina-btn--primary" data-mina-toggle="#contact">連絡する</button>

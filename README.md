@@ -2,7 +2,9 @@
 
 MinaUI は、Web サイト・ダッシュボード・ポートフォリオ・ランディングページまで同じ API で組み立てられる、依存関係のない汎用 CSS / JS UI フレームワークです。
 
-デフォルトは、`vrc.ossmxun.net` のような暗い背景、ピンク〜紫のグラデーション、半透明のガラス面を持つビジュアルです。`data-theme="light"`、`data-style="flat"`、`data-accent="cyan"` などを切り替えるだけで、同じコンポーネントを別のプロダクトにも使えます。
+**Design Philosophy**: 「暗い背景に浮かぶ、質感のある面」を軸に、Pink / Violet / Glass のビジュアルアイデンティティを維持しつつ、面の階層(透過 → すりガラス → 液体ガラス)を明確に分離します。Glass / Glow は乱用せず、必要な面にだけ掛けることで、高級感・未来感と性能・可読性を両立させます。
+
+デフォルトは、`vrc.ossmxun.net` のような暗い背景、ピンク〜紫のグラデーション、半透明の面を持つビジュアルです。`data-theme="light"`、`data-style="flat"`、`data-accent="cyan"` などを切り替えるだけで、同じコンポーネントを別のプロダクトにも使えます。
 
 ## クイックスタート
 
@@ -32,7 +34,7 @@ MinaUI は、Web サイト・ダッシュボード・ポートフォリオ・ラ
 
 ## デモ
 
-`demo/index.html` に、`vrc.ossmxun.net` の構成を参考にした写真背景、WebGL liquid glass のプロフィール面、メモリー写真、静的カードと操作カード、タブ、モーダル、toastをまとめています。デモ自身のレイアウトCSSは持たず、MinaUI の共通クラス/APIだけで組み立てています。
+`demo/index.html` に、`vrc.ossmxun.net` の構成を参考にした写真背景、WebGL liquid glass のプロフィール面、メモリー写真、静的カードと操作カード、タブ、ドロップダウン、モーダル、toastをまとめています。ページ上部のコントロールから、テーマ(dark / light)、ガラス品質(high / balanced / performance)、フォールバックbackend(native / static)をその場で切替えて確認できます。デモ自身のレイアウトCSSは持たず、MinaUI の共通クラス/APIだけで組み立てています。
 
 リポジトリ直下で静的サーバーを起動し、`http://localhost:4173/demo/` を開いて確認できます。
 
@@ -72,15 +74,22 @@ python -m http.server 4173
 }
 ```
 
-#### Surface と elevation の基準
+#### Surface と elevation の基準(v0.2.0 で3層に分離)
 
-- 通常のカードやパネルは `mina-card` / `mina-panel`。半透明面と `--mina-shadow-md` を使いますが、`backdrop-filter` は要求しません。
-- 背景の屈折・ぼかしが必要な面だけ `mina-glass` を追加します（例: `mina-card mina-glass`）。
+MinaUI v0.2.0 から、面は3つのレベルに明確に分かれています。GPUレイヤー(`backdrop-filter` は要素ごとにコンポジットレイヤーを生む)を必要な面にだけ限定するためです。
+
+| レベル | クラス | 見た目 | 使う場所 |
+| :-- | :-- | :-- | :-- |
+| 1. 透過面 | `mina-card` / `mina-panel` | 半透明の背景 + ボーダー + `--mina-shadow-md`。blurなし | 標準のカード・パネル。数を並べてOK |
+| 2. すりガラス | `mina-card mina-glass` のように併記 | 1 + `backdrop-filter` によるフロスト | 背景写真やグラデーションの上に浮くヒーロー面、ナビ、ドロワー |
+| 3. 液体ガラス | `mina-glass--liquid` + `minaui.glass.js` | WebGL2の屈折レンズ | 1ページに最大 `maxCards`(既定4)枚の主役面のみ |
+
 - `mina-shadow-sm` は補助面、`mina-shadow-md` は標準面、`mina-shadow-lg` はモーダルや一時的な前景レイヤー向けです。
 - `mina-card--interactive` は操作対象のカードだけに付け、ホバー時の浮き上がりを明示します。装飾目的で全カードに付けないでください。
 - `mina-card--static` は情報表示用であることを明示します。リンクやボタンには `mina-card--interactive` を付け、矢印・hover・focusで操作対象だと伝えます。
+- フォーム入力(`mina-input` など)はblurを持ちません。 写真上に直接浮かせる特殊なケースだけ `mina-glass` を併記してください。
 
-この基準は、見た目を保ちながら blur と大きな影の数を必要最小限にするためのものです。
+この基準は、見た目を保ちながら blur と大きな影の数を必要最小限にするためのものです。旧バージョンのように全カードをフロストさせたい場合は、該当要素に `mina-glass` を足すだけで同じ見た目に戻せます。
 
 ### JavaScript
 
@@ -94,7 +103,7 @@ MinaUI.setTheme("light");
 MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 ```
 
-モーダルとドロワーは開いたときに最初の操作可能要素へフォーカスし、`Tab` / `Shift+Tab` をレイヤー内に閉じ込め、閉じたときに起点へフォーカスを戻します。`Escape` でも閉じられます。無効化する必要がある特殊なケースだけ `data-mina-focus-trap="false"` を指定してください。タブは左右（縦配置では上下）の矢印キーと `Home` / `End`、ドロップダウンは矢印キー・`Home` / `End`・`Escape` に対応します。
+モーダルとドロワーは開いたときに最初の操作可能要素へフォーカスし、`Tab` / `Shift+Tab` をレイヤー内に閉じ込め、閉じたときに起点へフォーカスを戻します。`Escape` でも閉じられます。モーダルが開いている間は `html[data-mina-modal-open]` により背面スクロールも固定されます。無効化する必要がある特殊なケースだけ `data-mina-focus-trap="false"` を指定してください。タブは左右（縦配置では上下）の矢印キーと `Home` / `End`、ドロップダウンは矢印キー・`Home` / `End`・`Escape` に対応します。トーストは閉じる際にフェードアウトしてからDOMから取り除かれます。
 
 宣言的な属性も利用できます。
 
@@ -116,13 +125,16 @@ MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 
 ## ガラスとパフォーマンス
 
-### Default glassと軽量モード
+### 3種類のサーフェスと軽量モード
 
-`.mina-card` / `.mina-panel` はMinaUIの元の半透明glass面・ボーダー・影・backdrop-filterをデフォルトで維持します。OpenGL系の液体ガラスが必要な面には、さらに `.mina-glass--liquid` を付けて `minaui.glass.js` を読み込みます。
+v0.2.0 では面が3層に分離されました。標準の `mina-card` / `mina-panel` は **blurなしの透過面** です。フロスト(すりガラス)が本当に必要な面だけ `mina-glass` を追加し、主役の面にはWebGL液体ガラス `mina-glass--liquid` を使います。
 
 ```html
-<!-- MinaUI標準のfrosted glass -->
+<!-- 標準: 透過面(blurなし)。カードを多数並べてもGPUレイヤーは増えない -->
 <div class="mina-card">…</div>
+
+<!-- すりガラス: 背景写真の上に浮く面など、blurが見せる効果を持つ場所だけ -->
+<div class="mina-card mina-glass">…</div>
 
 <!-- WebGL2の液体ガラス -->
 <div class="mina-card mina-glass mina-glass--liquid">…</div>
@@ -140,9 +152,9 @@ MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 
 | 値 | 挙動 |
 | :-- | :-- |
-| `quality` | 全エフェクト。animated backdrop-filterも有効 |
-| `balanced` | 見た目はqualityと同じ。ただしblurアニメーションはopacityフェードへフォールバック |
-| `performance` | blur縮小/無効化、glow・巨大影の削減、無限装飾アニメ停止、不透明度の高い面で可読性を維持 |
+| `quality` | 全エフェクト。animated backdrop-filterも有効。MinaGlassは25-tapシェーダー |
+| `balanced` | 静止見た目はqualityと同じ。blurアニメーション（`mina-glass-blur-in` 等）はopacityフェードへ置き換わり、MinaGlassは9-tapシェーダーになる |
+| `performance` | blur縮小/無効化、glow・巨大影の削減、無限装飾アニメ（skeletonのshimmer含む）停止、不透明度の高い面で可読性を維持 |
 
 `prefers-reduced-motion` の対応は従来どおり全モードで優先されます。
 
@@ -165,15 +177,17 @@ WebGLキャンバスは `position: fixed` + `pointer-events: none` + コンテ�
 
 ```js
 const glass = MinaGlass.autoInit({
-  background: "/images/bg.jpg", // レンズ源
-  quality: "high",              // high | balanced | performance（既定）
+  background: "/images/bg.jpg", // レンズ源（WebGL backendではページ背景として全画面描画される）
+  quality: "high",              // high | balanced | performance（省略時は high）
   backend: "auto",              // auto | webgl | native | static
   renderScale: 1,               // devicePixelRatio への係数
   maxPixelCount: 1920 * 1080    // バックバッファのピクセル数上限
 });
 ```
 
-既存API（`uploadTexture()`、`setSaturate()`、`setWhiteness()`、`maxCards`、`render({ cards })`、`startRender(fn)`、`destroy()`）とAquaGlass互換エイリアスは維持されています。
+> **重要**: WebGL backendは、液体ガラス面の外側も含めて**ページ全面に背景テクスチャを描画します**。`background` を渡すか `uploadTexture()` を呼んでください。どちらも無しでliquid面だけ置くと、内蔵のプレースホルダーテクスチャが全面を覆います(コンソールに警告が出ます)。CSS背景だけで完結するページは `backend: "native"` を選ぶか、そもそも `mina-glass--liquid` を使わないでください。
+
+既存API（`uploadTexture()`、`setSaturate()`、`setWhiteness()`、`maxCards`、`render({ cards })`、`startRender(fn)`、`destroy()`）とAquaGlass互換エイリアスは維持されています。liquid面として追跡した要素はResizeObserverでも監視されるため、要素単位のリサイズにもレンズが追従します。
 
 ### Backend
 

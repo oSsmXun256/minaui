@@ -15,6 +15,23 @@
   <main class="mina-content">
     <section class="mina-page mina-section--tight" aria-labelledby="profile-heading">
       <div class="mina-container--md">
+        <!-- Demo control bar: theme / glass quality / fallback backends.
+             すべて公開API (MinaUI.setTheme / MinaGlass.autoInit + destroy)のみで動作する。 -->
+        <div class="mina-cluster mina-cluster--between mina-mb-4">
+          <div class="mina-cluster" role="group" aria-label="テーマ切替">
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-mina-theme="dark">Dark</button>
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-mina-theme="light">Light</button>
+          </div>
+          <div class="mina-cluster" role="group" aria-label="ガラス品質">
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-quality="high">High</button>
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-quality="balanced">Balanced</button>
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-quality="performance">Performance</button>
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-backend="native">Native fallback</button>
+            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-backend="static">Static fallback</button>
+          </div>
+        </div>
+        <p class="mina-caption mina-mb-4" id="glass-status" role="status">backend: — / quality: —</p>
+
         <article class="mina-card mina-glass mina-glass--liquid mina-card--static" aria-labelledby="profile-heading">
           <div class="mina-grid mina-grid--3 mina-p-6">
             <div class="mina-cluster">
@@ -122,7 +139,19 @@
         <div class="mina-cluster">
           <button class="mina-btn mina-btn--primary" type="button" data-mina-toggle="#demo-modal">Open modal</button>
           <button class="mina-btn mina-btn--glass" type="button" onclick="MinaUI.toast('設定を保存しました', { title: 'Saved', tone: 'success' })">Show toast</button>
+          <div class="mina-dropdown">
+            <button class="mina-btn mina-btn--glass" type="button" data-mina-toggle="" aria-haspopup="menu" aria-expanded="false">
+              <span data-mina-dropdown-value>Menu</span>
+              <span aria-hidden="true">▾</span>
+            </button>
+            <div class="mina-dropdown__menu" role="menu" aria-hidden="true" inert>
+              <button class="mina-dropdown__item" type="button" role="menuitem" data-mina-dropdown-item data-value="profile">プロフィール</button>
+              <button class="mina-dropdown__item" type="button" role="menuitem" data-mina-dropdown-item data-value="photos">写真</button>
+              <button class="mina-dropdown__item" type="button" role="menuitem" data-mina-dropdown-item data-value="settings">設定</button>
+            </div>
+          </div>
         </div>
+        <p class="mina-caption">ドロップダウンは矢印キー・Home / End・Escape、モーダルはTab / Shift+Tab・Escapeに対応しています。</p>
       </div>
     </section>
   </main>
@@ -145,14 +174,42 @@
   <script src="../minaui.glass.js" defer></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
+      var status = document.getElementById('glass-status');
+
+      function report(glass, quality) {
+        if (!status) return;
+        status.textContent = 'backend: ' + glass.backend + ' / quality: ' + quality;
+      }
+
+      function rebuildGlass(options) {
+        if (window.demoMinaGlass) window.demoMinaGlass.destroy();
+        var quality = options.quality || 'high';
+        // balanced / performance はCSS側のモード属性と合わせ、
+        // JSシェーダーとCSS表現が同じ段階を指すようにする
+        if (quality === 'high') document.documentElement.removeAttribute('data-mina-performance');
+        else document.documentElement.setAttribute('data-mina-performance', quality);
+        window.demoMinaGlass = window.MinaGlass.autoInit(Object.assign({
+          background: 'assets/vrc-background.jpg',
+          maxCards: 2,
+          saturate: 1.5,
+          whiteLevel: 0
+        }, options));
+        report(window.demoMinaGlass, quality);
+      }
+
       if (!window.MinaGlass) return;
-      window.demoMinaGlass = window.MinaGlass.autoInit({
-        background: 'assets/vrc-background.jpg',
-        backend: 'auto',
-        quality: 'high',
-        maxCards: 2,
-        saturate: 1.5,
-        whiteLevel: 0
+      window.demoRebuildGlass = rebuildGlass;
+      rebuildGlass({ quality: 'high' });
+
+      document.querySelectorAll('[data-demo-quality]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          rebuildGlass({ quality: btn.getAttribute('data-demo-quality') });
+        });
+      });
+      document.querySelectorAll('[data-demo-backend]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          rebuildGlass({ quality: 'high', backend: btn.getAttribute('data-demo-backend') });
+        });
       });
     });
   </script>
