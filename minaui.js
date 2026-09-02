@@ -1,5 +1,5 @@
 /*!
- * MinaUI v0.1.0
+ * MinaUI v0.2.0
  * Small, dependency-free behavior helpers for MinaUI components.
  * Copyright (c) 2026 oSsmXun
  * Released under the MIT License.
@@ -23,7 +23,7 @@
   ].join(",");
 
   var MinaUI = {
-    version: "0.1.0",
+    version: "0.2.0",
     _initialized: false,
 
     _focusable: function (container) {
@@ -288,6 +288,9 @@
       target.classList.add("is-open");
       if (target.matches(".mina-modal")) {
         target.setAttribute("aria-hidden", "false");
+        // Body scroll lock (html[data-mina-modal-open]) while any modal is open
+        MinaUI._modalOpenCount = (MinaUI._modalOpenCount || 0) + 1;
+        document.documentElement.setAttribute("data-mina-modal-open", "");
         window.setTimeout(function () {
           if (target.classList.contains("is-open")) MinaUI._focusLayer(target);
         }, 0);
@@ -315,6 +318,10 @@
       var wasOpen = target.classList.contains("is-open");
       target.classList.remove("is-open");
       if (target.matches(".mina-modal, .mina-drawer")) target.setAttribute("aria-hidden", "true");
+      if (target.matches(".mina-modal") && wasOpen) {
+        MinaUI._modalOpenCount = Math.max(0, (MinaUI._modalOpenCount || 0) - 1);
+        if (!MinaUI._modalOpenCount) document.documentElement.removeAttribute("data-mina-modal-open");
+      }
       if (target.matches(".mina-drawer")) {
         var overlay = document.querySelector("[data-mina-overlay]");
         if (overlay) overlay.classList.remove("is-visible");
@@ -435,13 +442,21 @@
       close.className = "mina-btn mina-btn--ghost mina-btn--icon mina-btn--sm";
       close.setAttribute("aria-label", "Close notification");
       close.textContent = "×";
-      close.addEventListener("click", function () { toast.remove(); });
+      close.addEventListener("click", function () { MinaUI._dismissToast(toast); });
       toast.appendChild(content);
       toast.appendChild(close);
       region.appendChild(toast);
       var duration = options.duration === 0 ? 0 : (options.duration || 4500);
-      if (duration > 0) window.setTimeout(function () { toast.remove(); }, duration);
+      if (duration > 0) window.setTimeout(function () { MinaUI._dismissToast(toast); }, duration);
       return toast;
+    },
+
+    /** Fade a toast out (no-op reentry) before removing it from the DOM. */
+    _dismissToast: function (toast) {
+      if (!toast || !toast.parentNode || toast.getAttribute("data-mina-leaving")) return;
+      toast.setAttribute("data-mina-leaving", "true");
+      toast.classList.add("mina-fade-out");
+      window.setTimeout(function () { toast.remove(); }, 350);
     }
   };
 

@@ -1,5 +1,5 @@
 /*!
- * minaui.glass.js V2.1
+ * minaui.glass.js V2.2
  * MinaUI optional liquid-glass module with pluggable backends.
  *
  * Backends:
@@ -75,6 +75,7 @@ class MinaGlass {
         this._loopId = 0;
         this._listeners = [];
         this._resizeObserver = null;
+        this._observedElements = new Set();
         this._trackedElements = [];
 
         const self = this;
@@ -97,6 +98,9 @@ class MinaGlass {
 
     static normalizeQuality(value) {
         if (value === 'high' || value === 'quality') return 'high';
+        // 'balanced' keeps the liquid-glass look at a lower shader cost
+        // (9-tap + mip LOD instead of the 25-tap loop).
+        if (value === 'balanced' || value === 'medium' || value === 'balance') return 'balanced';
         if (value === 'performance' || value === 'low' || value === 'fast') return 'performance';
         // Preserve MinaUI's original 25-tap liquid-glass look unless a page
         // explicitly opts into a lower-cost performance tier.
@@ -743,6 +747,11 @@ class MinaGlass {
         if (typeof ResizeObserver === 'function') {
             this._resizeObserver = new ResizeObserver(onResize);
             this._resizeObserver.observe(document.documentElement);
+            // Tracked liquid elements resize independently of the viewport
+            // (layout changes, content growth); observe them too so the lens
+            // follows its element. destroy() disconnects the observer.
+            this._observedElements = new Set();
+            this._collectElements().forEach(function (el) { self._observeElement(el); });
         } else {
             this._addEventListener(window, 'resize', onResize);
         }
@@ -754,10 +763,20 @@ class MinaGlass {
             img.crossOrigin = 'anonymous';
             img.onload = function () { self.uploadTexture(img); };
             img.src = options.background;
+        } else if (this.backend === 'webgl') {
+            console.warn('MinaGlass: the WebGL backend paints the full-page background. ' +
+                'Pass a "background" option or call uploadTexture(), otherwise the ' +
+                'built-in placeholder texture covers the page.');
         }
 
         this.requestRender();
         return this;
+    }
+
+    _observeElement(el) {
+        if (!this._resizeObserver || !el || this._observedElements.has(el)) return;
+        this._observedElements.add(el);
+        this._resizeObserver.observe(el);
     }
 
     _collectElements() {
@@ -865,6 +884,7 @@ class MinaGlass {
             this._resizeObserver.disconnect();
             this._resizeObserver = null;
         }
+        this._observedElements.clear();
 
         this._clearFallbackStyles();
         this._teardownGlObjects();
