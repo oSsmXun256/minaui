@@ -9,7 +9,7 @@
 </head>
 <body>
   <canvas id="mina-glcanvas" aria-hidden="true"></canvas>
-  <div class="mina-shell">
+  <div class="mina-shell" style="background-image: url('assets/mina-glass-demo.svg'); background-size: cover; background-position: center;">
     <main class="mina-container mina-container--wide">
       <section class="mina-section mina-stack mina-stack--8">
         <header class="mina-cluster mina-cluster--between">
@@ -36,7 +36,7 @@
           <div class="mina-stack mina-stack--1">
             <p class="mina-eyebrow mina-text-primary">WebGL liquid glass</p>
             <h2 class="mina-h2" id="liquid-heading">OpenGL系の液体ガラスをそのまま確認</h2>
-            <p class="mina-text-muted">`.mina-glass--liquid`と`minaui.glass.js`を使う面だけ、背景の屈折・ぼかし・ハイライトをWebGL2で描画します。</p>
+            <p class="mina-text-muted">`.mina-glass--liquid`と`minaui.glass.js`を使う面だけ、背景画像の屈折・ぼかし・ハイライトをWebGL2で描画します。</p>
           </div>
           <div class="mina-grid mina-grid--2">
             <article class="mina-card mina-glass mina-glass--liquid mina-card--static">
@@ -173,7 +173,8 @@
           backend: 'auto',
           quality: 'high',
           maxCards: 2,
-          saturate: 1.2
+          saturate: 1.2,
+          background: 'assets/mina-glass-demo.svg'
         });
       }
     });

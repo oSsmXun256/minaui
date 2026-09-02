@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">MinaUI liquid glass demo background</title>
+  <desc id="desc">Abstract neon gradient with high-contrast geometric details for demonstrating refraction.</desc>
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#110b2c"/>
+      <stop offset="0.42" stop-color="#371053"/>
+      <stop offset="0.72" stop-color="#081f46"/>
+      <stop offset="1" stop-color="#071c2a"/>
+    </linearGradient>
+    <radialGradient id="pink" cx="0.2" cy="0.12" r="0.62">
+      <stop offset="0" stop-color="#ff4db8" stop-opacity="0.9"/>
+      <stop offset="0.42" stop-color="#b62cbe" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#b62cbe" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan" cx="0.82" cy="0.78" r="0.68">
+      <stop offset="0" stop-color="#19e1e8" stop-opacity="0.8"/>
+      <stop offset="0.46" stop-color="#167ac3" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#167ac3" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ribbon" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff74c8" stop-opacity="0"/>
+      <stop offset="0.45" stop-color="#ff74c8" stop-opacity="0.82"/>
+      <stop offset="0.7" stop-color="#6ee7ff" stop-opacity="0.56"/>
+      <stop offset="1" stop-color="#6ee7ff" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse" patternTransform="rotate(16)">
+      <path d="M64 0H0V64" fill="none" stroke="#b8edff" stroke-opacity="0.14" stroke-width="2"/>
+      <circle cx="3" cy="3" r="3" fill="#fff" fill-opacity="0.34"/>
+    </pattern>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#base)"/>
+  <rect width="1600" height="1000" fill="url(#pink)"/>
+  <rect width="1600" height="1000" fill="url(#cyan)"/>
+  <g filter="url(#soft)" opacity="0.9">
+    <ellipse cx="320" cy="270" rx="240" ry="150" fill="#ff3eb5" transform="rotate(-22 320 270)"/>
+    <ellipse cx="1230" cy="720" rx="300" ry="170" fill="#17d8e6" transform="rotate(18 1230 720)"/>
+    <ellipse cx="920" cy="160" rx="180" ry="90" fill="#8d5cff" transform="rotate(-12 920 160)"/>
+  </g>
+  <path d="M-180 720C120 420 280 890 620 580S1110 190 1770 380" fill="none" stroke="url(#ribbon)" stroke-width="58" opacity="0.52"/>
+  <path d="M-120 780C180 480 360 930 670 630S1160 250 1720 450" fill="none" stroke="#dffcff" stroke-opacity="0.34" stroke-width="3"/>
+  <path d="M80 80L530 520M310 40L800 530M1080 40L1510 470M1240 290L1590 640" stroke="#fff" stroke-opacity="0.26" stroke-width="5"/>
+  <g fill="none" stroke="#a7f6ff" stroke-opacity="0.56" stroke-width="3">
+    <rect x="94" y="170" width="280" height="180" rx="28" transform="rotate(-12 234 260)"/>
+    <rect x="1160" y="140" width="290" height="190" rx="34" transform="rotate(14 1305 235)"/>
+    <circle cx="760" cy="760" r="112"/>
+    <circle cx="760" cy="760" r="76"/>
+  </g>
+  <rect width="1600" height="1000" fill="url(#grid)"/>
+  <rect x="24" y="24" width="1552" height="952" rx="42" fill="none" stroke="#fff" stroke-opacity="0.18" stroke-width="2"/>
+</svg>
