@@ -1621,3 +1621,40 @@ input[type="range"]::-moz-range-thumb {
   --aqua-radius-pill: var(--mina-radius-pill) !important;
 }
 
+
+/* ==========================================================================
+   PERFORMANCE MODE BRIDGE
+   <html data-mina-performance="quality | balanced | performance">
+   Mirrors the MinaUI performance tier for legacy .aqua-* surfaces. The Aqua
+   API itself is unchanged; this only trims expensive effects when a site
+   explicitly opts into the performance mode.
+   ========================================================================== */
+
+[data-mina-performance="performance"] {
+  --aqua-glass-blur: blur(8px) saturate(1.05) !important;
+  --aqua-shadow-md: var(--mina-shadow-sm) !important;
+  --aqua-shadow-lg: var(--mina-shadow-sm) !important;
+  --aqua-shadow-xl: var(--mina-shadow-sm) !important;
+  --aqua-glass-shadow: var(--mina-shadow-sm) !important;
+}
+
+[data-mina-performance="performance"] .aqua-glass,
+[data-mina-performance="performance"] .aqua-glass-sm,
+[data-mina-performance="performance"] .aqua-glass-lg,
+[data-mina-performance="performance"] .aqua-card,
+[data-mina-performance="performance"] .aqua-panel,
+[data-mina-performance="performance"] .aqua-input,
+[data-mina-performance="performance"] .aqua-badge-glass {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+[data-mina-performance="performance"] .aqua-pulse,
+[data-mina-performance="performance"] .aqua-glow,
+[data-mina-performance="performance"] .aqua-glow-glass,
+[data-mina-performance="performance"] .aqua-shimmer,
+[data-mina-performance="performance"] .aqua-glass-shimmer,
+[data-mina-performance="performance"] .aqua-text-shimmer,
+[data-mina-performance="performance"] .aqua-gradient-animated {
+  animation: none;
+}

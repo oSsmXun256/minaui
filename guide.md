@@ -39,7 +39,55 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 </article>
 ```
 
+情報表示だけのカードには `mina-card--static` を付け、リンクやクリック対象には `mina-card--interactive` を付けます。後者だけがhover / focusで浮き上がり、右上の矢印で操作対象だと伝わります。`mina-card--glow` は操作対象の中でも強調したいものに限定してください。
+
 `mina-card--interactive` はホバー時にわずかに浮き、`mina-card--glow` はブランド色の光を追加します。背景写真や WebGL を使う場合は、背景レイヤーを `mina-backdrop`、前景を `mina-shell` の子要素にしてください。
+
+Surfaceの使い分けは、通常面を `mina-card` / `mina-panel`、ぼかしが必要な面だけを `mina-glass` 併記とします。標準の高さは `--mina-shadow-md`、補助面は `mina-shadow-sm`、モーダルなど一時的な前景は `mina-shadow-lg` です。`mina-card--interactive` は操作対象にだけ付けます。
+
+### すりガラス（backdrop-filter）はオプトイン
+
+`.mina-card` / `.mina-panel` は半透明の面を保ちますが、デフォルトでは backdrop-filter を要求しません。すりガラスの屈折表現が要る要素にだけ `.mina-glass` を追加します。
+
+```html
+<article class="mina-card mina-glass">このカードだけblurされる</article>
+```
+
+カードやパネルを多数並べるページでは、これだけでSafari・低性能端末の描画負荷が大きく下がります。コンポジットレイヤーの明示的な昇格が必要な特殊ケースは `.mina-gpu` を使ってください。
+
+## パフォーマンス設計
+
+### Performance Mode
+
+`<html data-mina-performance="...">` で3段階を指定できます。省略時は `balanced` です。
+
+```html
+<html data-mina-performance="performance">
+```
+
+- `quality` — 全エフェクト。animated backdrop-filter（`mina-glass-blur-in` 等）も有効。
+- `balanced` — 見た目はqualityと同じですが、blurアニメーションはopacityフェードに置き換わります。
+- `performance` — blurの縮小・無効化、glow/巨大影の削減、無限系の装飾アニメ停止。面の不透明度を上げて可読性を維持します。
+
+`prefers-reduced-motion` が指定された環境では、Performance Modeより先にモーション全体が抑制されます。
+
+### MinaUI GlassとWebGL液体ガラス
+
+WebGLを使う液体ガラスは `.mina-glass--liquid` / `.mina-glass-liquid` を要素に付け、`minaui.glass.js` を読み込んで `MinaGlass.autoInit()` を呼びます。詳細なオプション（`quality` / `backend` / `renderScale` / `maxPixelCount`）とBackend選択（`webgl` / `native` / `static`）は README の「MinaGlass WebGL」を参照してください。
+
+- Safari / iOS では `auto` がCSS backdrop-filterの `native` backendを選び、固定キャンバスの座標追跡が非同期スクロールでずれる問題を回避します。
+- Firefox や WebGL2が使えない環境でも native/static へ自動フォールバックし、Context Lostでもページが壊れません。
+- Liquid Glass以外の `.mina-glass` 全般も Performance Mode の対象です（blur削減、影削減など）。
+
+### Layer契約
+
+Liquid Glass用キャンバスを含む重ね順は変数で定義されています。サイト固有のz-indexハックの代わりにこれらを使ってください。
+
+```css
+--mina-z-backdrop-deep /* 背景オーラ */ < --mina-z-backdrop /* 背景写真 */
+< --mina-z-glass-canvas /* WebGLキャンバス */ < 通常コンテンツ < --mina-z-sticky
+< dropdown < drawer < overlay < modal < toast < tooltip
+```
 
 ## テーマとブランド
 
@@ -115,7 +163,7 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 </div>
 ```
 
-モーダルとドロワーは、閉じる操作とフォーカスの戻し先をサイト側で必要に応じて追加してください。MinaUI の JS は Escape、バックドロップ、`aria-expanded` / `aria-hidden` の切り替えを提供します。
+モーダルとドロワーは、MinaUI の JS が Escape、フォーカストラップ、起点へのフォーカス復帰、バックドロップ、`aria-expanded` / `aria-hidden` の切り替えを提供します。モーダルは `role="dialog"`、`aria-modal="true"`、`aria-labelledby` を付け、特殊な例外だけ `data-mina-focus-trap="false"` を指定してください。タブは左右（縦配置では上下）の矢印キーと `Home` / `End`、ドロップダウンは矢印キー・`Home` / `End`・`Escape` で操作できます。
 
 ```html
 <button class="mina-btn mina-btn--primary" data-mina-toggle="#contact">連絡する</button>

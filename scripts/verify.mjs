@@ -49,10 +49,75 @@ const requiredGlass = ["class MinaGlass", "static autoInit", "uploadTexture", "s
 const missingGlass = requiredGlass.filter((selector) => !glass.includes(selector));
 if (missingGlass.length) throw new Error(`Missing MinaGlass API: ${missingGlass.join(", ")}`);
 
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+/* ---- Performance & rendering contract (V2.1) ---- */
+
+const surfaceBlock = css.match(/\.mina-glass,\s*\.mina-card,\s*\.mina-panel\s*\{[^}]*\}/);
+assert(surfaceBlock, "Surface block (.mina-glass, .mina-card, .mina-panel) is missing");
+assert(!surfaceBlock[0].includes("backdrop-filter"), ".mina-card/.mina-panel must not request backdrop-filter by default");
+
+const glassBlock = css.match(/\.mina-glass\s*\{[^}]*\}/);
+assert(glassBlock && glassBlock[0].includes("backdrop-filter"), ".mina-glass must provide opt-in backdrop-filter");
+assert(!/\.mina-glass\s*\{[^}]*translateZ/.test(css), ".mina-glass must not force GPU layer promotion (moved to .mina-gpu)");
+assert(!/\.mina-glass\s*\{[^}]*contain:\s*(paint|layout paint)/.test(css), ".mina-glass must not use paint containment (clips shadows)");
+assert(css.includes(".mina-gpu"), "Opt-in .mina-gpu layer-promotion utility is missing");
+
+const requiredPerfCss = [
+  "--mina-card-bg",
+  "--mina-z-backdrop",
+  "--mina-z-glass-canvas",
+  "[data-mina-performance=\"quality\"]",
+  "[data-mina-performance=\"performance\"]",
+  "--mina-liquid-native-bg",
+  "@media (hover: hover) and (pointer: fine)",
+  ".mina-liquid-native",
+  ".mina-liquid-static"
+];
+const missingPerfCss = requiredPerfCss.filter((needle) => !css.includes(needle));
+if (missingPerfCss.length) throw new Error(`Missing performance/z-index CSS API: ${missingPerfCss.join(", ")}`);
+
+const forbiddenGlassPatterns = [
+  [/preserveDrawingBuffer:\s*true/, "preserveDrawingBuffer:true must not come back"],
+  [/antialias:\s*true/, "antialias:true must not come back"]
+];
+for (const [pattern, message] of forbiddenGlassPatterns) {
+  assert(!pattern.test(glass), `MinaGlass regression: ${message}`);
+}
+
+const requiredGlassPerf = [
+  "preserveDrawingBuffer: false",
+  "antialias: false",
+  "depth: false",
+  "stencil: false",
+  "'high'", "'balanced'", "'performance'",
+  "'auto'", "'webgl'", "'native'", "'static'",
+  "renderScale",
+  "maxPixelCount",
+  "webglcontextlost",
+  "webglcontextrestored",
+  "ResizeObserver",
+  "removeEventListener",
+  "cancelAnimationFrame",
+  "disconnect()",
+  "deleteProgram",
+  "deleteTexture",
+  "deleteVertexArray",
+  "_requestRender",
+  "window.AquaGlass"
+];
+const missingGlassPerf = requiredGlassPerf.filter((needle) => !glass.includes(needle));
+if (missingGlassPerf.length) throw new Error(`Missing MinaGlass performance/fallback API: ${missingGlassPerf.join(", ")}`);
+
+assert(/open:\s*function\s*\(value(?:,\s*trigger)?\)\s*\{\s*var target = typeof value === "string"/.test(js), "MinaUI.open must accept selector strings");
+assert(/close:\s*function\s*\(value(?:,\s*options)?\)\s*\{\s*if \(!value\) return null;\s*var target = typeof value === "string"/.test(js), "MinaUI.close must accept selector strings");
+
 try {
   new Script(js, { filename: jsPath });
   new Script(glass, { filename: glassPath });
 } catch (error) {
   throw new Error(`JavaScript syntax check failed: ${error.message}`);
 }
-console.log(`MinaUI verification passed (${css.length} CSS chars, ${js.length} JS chars, ${compat.length} compatibility CSS chars, ${glass.length} MinaGlass JS chars).`);
+console.log(`MinaUI verification passed (${css.length} CSS chars, ${js.length} JS chars, ${compat.length} compatibility CSS chars, ${glass.length} MinaGlass JS chars; performance/z-index/context-loss checks OK).`);

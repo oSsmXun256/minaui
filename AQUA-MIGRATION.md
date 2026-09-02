@@ -68,7 +68,7 @@ minaui-aqua-compat.css の末尾にこの変数ブリッジを定義していま
 - MinaUIの .mina-card は flex column で、Aquaの固定24px paddingを __body へ移しました。旧HTMLを保つ場合はcompatを使用してください。
 - Aquaの .aqua-panel はabsolute、MinaUIの .mina-panel は通常flowです。absoluteが仕様の場合だけ .mina-panel--floating を付けます。
 - Aquaのrangeは全inputへ適用されます。MinaUIは .mina-range / .mina-slider だけに適用し、他のフォームを壊しません。
-- Aquaのliquid surfaceはWebGLレンダリング用に背景/blur/box-shadowを除去します。MinaUIも同じ挙動を .mina-glass--liquid で提供します。OSS側で追加されていた .aqua-glass の contain: layout paint / translateZ(0) と canvas の pointer-events 無効化も、MinaUIの .mina-glass / #mina-glcanvas に取り込みました。
+- Aquaのliquid surfaceはWebGLレンダリング用に背景/blur/box-shadowを除去します。MinaUIも同じ挙動を .mina-glass--liquid で提供します。旧OSSの .aqua-glass にあった無条件の contain: layout paint / translateZ(0)（強制レイヤー化）は廃止し、contain: layout のみに縮小しました。レイヤー昇格が必要な場合は .mina-gpu を明示的に付けてください。canvasのpointer-events無効化とz-index契約（--mina-z-glass-canvas）は MinaUI の #mina-glcanvas が引き継いでいます。
 
 ## Style utility対応
 

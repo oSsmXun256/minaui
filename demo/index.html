@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="ja" data-theme="dark" data-style="glass" data-accent="pink" data-mina-performance="balanced">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MinaUIの共通コンポーネントとsurface設計のデモ">
+  <title>MinaUI — Design System Demo</title>
+  <link rel="stylesheet" href="../minaui.css">
+</head>
+<body>
+  <div class="mina-shell">
+    <main class="mina-container mina-container--wide">
+      <section class="mina-section mina-stack mina-stack--8">
+        <header class="mina-cluster mina-cluster--between">
+          <div class="mina-stack mina-stack--2">
+            <p class="mina-eyebrow mina-text-primary">MinaUI / design system</p>
+            <h1 class="mina-h1">Future-ready UI, with a quieter surface hierarchy.</h1>
+            <p class="mina-lead">MinaUIのpink / violet identityを保ったまま、通常面・浮遊面・Glassの役割を見分けられるようにしたデモです。</p>
+          </div>
+          <div class="mina-cluster">
+            <button class="mina-btn mina-btn--glass" type="button" data-mina-theme="light">Light</button>
+            <button class="mina-btn mina-btn--primary" type="button" data-mina-theme="dark">Dark</button>
+          </div>
+        </header>
+
+        <div class="mina-alert mina-alert--primary" role="status">
+          <span class="mina-alert__icon" aria-hidden="true">✦</span>
+          <div class="mina-alert__content">
+            <p class="mina-alert__title">MinaUIの基本ルール</p>
+            <p class="mina-alert__message">通常の情報面はmina-card、ぼかしが必要な浮遊面だけmina-glassを追加します。Glowも操作対象に限定します。</p>
+          </div>
+        </div>
+
+        <section class="mina-stack mina-stack--4" aria-labelledby="surface-heading">
+          <div class="mina-stack mina-stack--1">
+            <p class="mina-eyebrow">Surface hierarchy</p>
+            <h2 class="mina-h2" id="surface-heading">見た目が違う理由をクラスで表す</h2>
+          </div>
+          <div class="mina-grid mina-grid--auto">
+            <article class="mina-card mina-card--static">
+              <div class="mina-card__header">
+                <span class="mina-badge mina-badge--outline">情報表示</span>
+                <h3 class="mina-card__title mina-mt-2">System health</h3>
+                <p class="mina-card__subtitle">読み取り専用の標準面</p>
+              </div>
+              <div class="mina-card__body mina-stack mina-stack--2">
+                <p class="mina-text-muted">APIとワーカーは正常に稼働しています。</p>
+                <span class="mina-text-success">99.98% uptime</span>
+              </div>
+            </article>
+
+            <a class="mina-card mina-card--interactive" href="#tabs-heading">
+              <div class="mina-card__header">
+                <span class="mina-badge mina-badge--primary">操作対象</span>
+                <h3 class="mina-card__title mina-mt-2">Open activity</h3>
+                <p class="mina-card__subtitle">リンクカードはhover / focusで浮き上がる</p>
+              </div>
+              <div class="mina-card__body mina-stack mina-stack--2">
+                <p class="mina-text-muted">操作可能なカードだけにmina-card--interactiveを追加。</p>
+                <span class="mina-card__action">アクティビティを見る <span aria-hidden="true">→</span></span>
+              </div>
+            </a>
+
+            <article class="mina-card mina-card--static mina-card--solid">
+              <div class="mina-card__header">
+                <span class="mina-badge mina-badge--glass">前景面</span>
+                <h3 class="mina-card__title mina-mt-2">Release notes</h3>
+                <p class="mina-card__subtitle">solid surfaceで本文を安定して読む</p>
+              </div>
+              <div class="mina-card__body"><p class="mina-text-muted">透明度を抑えた面は情報量の多いエリア向きです。</p></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="mina-grid mina-grid--wide" aria-labelledby="tabs-heading">
+          <div class="mina-stack mina-stack--4">
+            <div class="mina-stack mina-stack--1">
+              <p class="mina-eyebrow">Interaction</p>
+              <h2 class="mina-h2" id="tabs-heading">Tabs, forms and feedback</h2>
+            </div>
+            <div data-mina-tabs>
+              <div class="mina-tabs" role="tablist" aria-label="アクティビティの種類">
+                <button class="mina-tabs__tab" type="button" data-mina-tab="overview" role="tab" aria-selected="true" aria-controls="overview">概要</button>
+                <button class="mina-tabs__tab" type="button" data-mina-tab="events" role="tab" aria-selected="false" aria-controls="events" tabindex="-1">イベント</button>
+                <button class="mina-tabs__tab" type="button" data-mina-tab="members" role="tab" aria-selected="false" aria-controls="members" tabindex="-1">メンバー</button>
+              </div>
+              <section id="overview" class="mina-tabs__panel" role="tabpanel"><p class="mina-text-muted">左右矢印キー、Home、Endで移動できます。</p></section>
+              <section id="events" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">イベントログを表示します。</p></section>
+              <section id="members" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">参加メンバーを表示します。</p></section>
+            </div>
+            <div class="mina-cluster">
+              <button class="mina-btn mina-btn--primary" type="button" data-mina-toggle="#demo-modal">Open modal</button>
+              <button class="mina-btn" type="button" onclick="MinaUI.toast('設定を保存しました', { title: 'Saved', tone: 'success' })">Show toast</button>
+            </div>
+          </div>
+
+          <aside class="mina-panel mina-panel--accent mina-stack mina-stack--4" aria-labelledby="controls-heading">
+            <div class="mina-stack mina-stack--1">
+              <p class="mina-eyebrow">Common primitives</p>
+              <h2 class="mina-h3" id="controls-heading">ページ固有CSSなしの構成</h2>
+            </div>
+            <div class="mina-field">
+              <label class="mina-field__label" for="demo-name">表示名</label>
+              <input class="mina-input" id="demo-name" type="text" value="Mina user">
+              <span class="mina-field__hint">共通field / input API</span>
+            </div>
+            <div class="mina-dropdown">
+              <button class="mina-btn" type="button" data-mina-toggle aria-haspopup="menu" aria-expanded="false">Quality: balanced</button>
+              <div class="mina-dropdown__menu" role="menu">
+                <button class="mina-dropdown__item" type="button" data-mina-dropdown-item data-value="quality">Quality</button>
+                <button class="mina-dropdown__item" type="button" data-mina-dropdown-item data-value="balanced">Balanced</button>
+                <button class="mina-dropdown__item" type="button" data-mina-dropdown-item data-value="performance">Performance</button>
+              </div>
+            </div>
+            <div class="mina-stat">
+              <span class="mina-stat__label">Glass usage</span>
+              <strong class="mina-stat__value">1 / 4</strong>
+              <span class="mina-stat__delta">low-cost composition</span>
+            </div>
+          </aside>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <section class="mina-modal" id="demo-modal" aria-hidden="true">
+    <div class="mina-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="demo-modal-title">
+      <header class="mina-modal__header">
+        <div>
+          <p class="mina-eyebrow">Accessible overlay</p>
+          <h2 class="mina-modal__title" id="demo-modal-title">Settings</h2>
+        </div>
+        <button class="mina-btn mina-btn--ghost mina-btn--icon" type="button" data-mina-close aria-label="閉じる">×</button>
+      </header>
+      <div class="mina-modal__body"><p class="mina-text-muted">Escape、Tab、Shift+Tabでモーダル内を操作できます。</p></div>
+      <footer class="mina-modal__footer"><button class="mina-btn mina-btn--primary" type="button" data-mina-close>Done</button></footer>
+    </div>
+  </section>
+
+  <script src="../minaui.js" defer></script>
+</body>
+</html>
