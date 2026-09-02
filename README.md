@@ -32,7 +32,7 @@ MinaUI は、Web サイト・ダッシュボード・ポートフォリオ・ラ
 
 ## デモ
 
-`demo/index.html` に、MinaUI の基本 surface、glass、elevation、静的カードと操作カード、タブ、ドロップダウン、モーダル、toast、テーマ切り替えをまとめています。デモ自身のレイアウトはページ専用CSSを持たず、MinaUI の共通クラス/APIだけで組み立てています。
+`demo/index.html` に、`vrc.ossmxun.net` の構成を参考にした写真背景、WebGL liquid glass のプロフィール面、メモリー写真、静的カードと操作カード、タブ、モーダル、toastをまとめています。デモ自身のレイアウトCSSは持たず、MinaUI の共通クラス/APIだけで組み立てています。
 
 リポジトリ直下で静的サーバーを起動し、`http://localhost:4173/demo/` を開いて確認できます。
 
@@ -154,6 +154,8 @@ MinaUI.toast("保存しました", { title: "完了", tone: "success" });
 --mina-z-backdrop-deep: -2;  /* .mina-shell::before のオーラ */
 --mina-z-backdrop: -1;       /* .mina-backdrop の背景写真 */
 --mina-z-glass-canvas: 0;    /* #mina-glcanvas（WebGL） */
+--mina-z-scrim: 2;            /* .mina-scrim（可読性マスク） */
+--mina-z-content: 5;          /* .mina-content（前景コンテンツ） */
 /* 0 以降は通常コンテンツ → --mina-z-sticky → dropdown → drawer → overlay → modal → toast → tooltip */
 ```
 

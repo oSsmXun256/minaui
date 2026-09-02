@@ -1,154 +1,131 @@
 <!doctype html>
-<html lang="ja" data-theme="dark" data-style="glass" data-accent="pink" data-mina-performance="quality">
+<html lang="ja" data-theme="dark" data-style="glass" data-accent="pink">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="MinaUIの共通コンポーネントとsurface設計のデモ">
-  <title>MinaUI — Design System Demo</title>
+  <meta name="description" content="MinaUIのglass surfaceとWebGL liquid glassをVRCプロフィール風に確認するデモ">
+  <title>MinaUI — Glass Profile Demo</title>
   <link rel="stylesheet" href="../minaui.css">
 </head>
 <body>
+  <!-- vrc.ossmxun.netと同じく、写真はWebGL canvasが背景として描画する。 -->
   <canvas id="mina-glcanvas" aria-hidden="true"></canvas>
-  <div class="mina-shell" style="background-image: url('assets/mina-glass-demo.svg'); background-size: cover; background-position: center;">
-    <main class="mina-container mina-container--wide">
-      <section class="mina-section mina-stack mina-stack--8">
-        <header class="mina-cluster mina-cluster--between">
-          <div class="mina-stack mina-stack--2">
-            <p class="mina-eyebrow mina-text-primary">MinaUI / design system</p>
-            <h1 class="mina-h1">Future-ready UI, with a quieter surface hierarchy.</h1>
-            <p class="mina-lead">MinaUIのpink / violet identityを保ったまま、通常面・浮遊面・Glassの役割を見分けられるようにしたデモです。</p>
-          </div>
-          <div class="mina-cluster">
-            <button class="mina-btn mina-btn--glass" type="button" data-mina-theme="light">Light</button>
-            <button class="mina-btn mina-btn--primary" type="button" data-mina-theme="dark">Dark</button>
-          </div>
-        </header>
+  <div class="mina-scrim" aria-hidden="true"></div>
 
-        <div class="mina-alert mina-alert--primary" role="status">
-          <span class="mina-alert__icon" aria-hidden="true">✦</span>
-          <div class="mina-alert__content">
-            <p class="mina-alert__title">MinaUIの基本ルール</p>
-            <p class="mina-alert__message">通常の情報面はmina-card、ぼかしが必要な浮遊面だけmina-glassを追加します。Glowも操作対象に限定します。</p>
+  <main class="mina-content">
+    <section class="mina-page mina-section--tight" aria-labelledby="profile-heading">
+      <div class="mina-container--md">
+        <article class="mina-card mina-glass mina-glass--liquid mina-card--static" aria-labelledby="profile-heading">
+          <div class="mina-grid mina-grid--3 mina-p-6">
+            <div class="mina-cluster">
+              <img class="mina-avatar mina-avatar--lg" src="assets/vrc-avatar.png" alt="お刺身くん">
+              <div class="mina-stack mina-stack--1">
+                <h1 class="mina-h3" id="profile-heading">お刺身くん</h1>
+                <p class="mina-text-muted">VRChat / Photography</p>
+              </div>
+            </div>
+
+            <div class="mina-stack mina-stack--2">
+              <p class="mina-body">Discordによくいます。VRChatでは写真を撮るのが好きです。</p>
+              <div class="mina-tag-list" aria-label="Interest tags">
+                <span class="mina-chip">写真撮影</span>
+                <span class="mina-chip">ワールド巡り</span>
+                <span class="mina-chip">友達との会話</span>
+              </div>
+            </div>
+
+            <div class="mina-stack mina-stack--2">
+              <div class="mina-grid mina-grid--2">
+                <div class="mina-stat">
+                  <span class="mina-stat__label">活動開始</span>
+                  <strong class="mina-stat__value">2023年11月</strong>
+                </div>
+                <div class="mina-stat">
+                  <span class="mina-stat__label">活動時間</span>
+                  <strong class="mina-stat__value">夜間・週末</strong>
+                </div>
+              </div>
+              <div class="mina-cluster" aria-label="Social links">
+                <a class="mina-btn mina-btn--glass mina-btn--icon" href="https://ossmxun.net" target="_blank" rel="noreferrer" aria-label="Web">↗</a>
+                <a class="mina-btn mina-btn--glass mina-btn--icon" href="https://x.com/os_vrc" target="_blank" rel="noreferrer" aria-label="X">𝕏</a>
+                <a class="mina-btn mina-btn--glass mina-btn--icon" href="https://bsky.app/profile/vrc.ossmxun.net" target="_blank" rel="noreferrer" aria-label="Bluesky">✦</a>
+              </div>
+            </div>
           </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="mina-container--wide mina-section--tight" aria-labelledby="memories-heading">
+      <div class="mina-cluster mina-cluster--between mina-mb-6">
+        <div class="mina-stack mina-stack--1">
+          <p class="mina-eyebrow mina-text-primary">Memories</p>
+          <h2 class="mina-h2" id="memories-heading">Photo surface</h2>
+        </div>
+        <p class="mina-caption">背景写真はMinaGlassのレンズ源としても使用</p>
+      </div>
+
+      <div class="mina-media-grid">
+        <a class="mina-media-tile mina-card--interactive" href="#interaction-lab">
+          <img src="assets/vrc-photo-01.jpg" alt="VRChatの夕景" loading="lazy">
+          <span class="mina-cover__overlay"><strong>Sunset world</strong><span class="mina-caption">View snapshot →</span></span>
+        </a>
+        <a class="mina-media-tile mina-card--interactive" href="#interaction-lab">
+          <img src="assets/vrc-photo-02.jpg" alt="VRChatの夜景" loading="lazy">
+          <span class="mina-cover__overlay"><strong>Night walk</strong><span class="mina-caption">View snapshot →</span></span>
+        </a>
+        <a class="mina-media-tile mina-card--interactive" href="#interaction-lab">
+          <img src="assets/vrc-photo-03.jpg" alt="VRChatのワールド" loading="lazy">
+          <span class="mina-cover__overlay"><strong>World memories</strong><span class="mina-caption">View snapshot →</span></span>
+        </a>
+      </div>
+    </section>
+
+    <section class="mina-container--wide mina-section--tight" id="interaction-lab" aria-labelledby="components-heading">
+      <div class="mina-panel mina-panel--accent mina-stack mina-stack--4">
+        <div class="mina-stack mina-stack--1">
+          <p class="mina-eyebrow">MinaUI primitives</p>
+          <h2 class="mina-h2" id="components-heading">共通コンポーネントの使い分け</h2>
+          <p class="mina-text-muted">VRC風の見た目を保ったまま、情報面と操作面の意図をmodifierで伝えます。</p>
         </div>
 
-        <section class="mina-stack mina-stack--4" aria-labelledby="liquid-heading">
-          <div class="mina-stack mina-stack--1">
-            <p class="mina-eyebrow mina-text-primary">WebGL liquid glass</p>
-            <h2 class="mina-h2" id="liquid-heading">OpenGL系の液体ガラスをそのまま確認</h2>
-            <p class="mina-text-muted">`.mina-glass--liquid`と`minaui.glass.js`を使う面だけ、背景画像の屈折・ぼかし・ハイライトをWebGL2で描画します。</p>
-          </div>
-          <div class="mina-grid mina-grid--2">
-            <article class="mina-card mina-glass mina-glass--liquid mina-card--static">
-              <div class="mina-card__header">
-                <span class="mina-badge mina-badge--glass">WebGL surface</span>
-                <h3 class="mina-card__title mina-mt-2">Liquid profile</h3>
-                <p class="mina-card__subtitle">背景の動きがレンズ越しに見える情報面</p>
-              </div>
-              <div class="mina-card__body"><p class="mina-text-muted">WebGL2対応環境ではMinaGlassがこの面の位置を追跡します。</p></div>
-            </article>
-            <article class="mina-card mina-glass mina-glass--liquid mina-card--interactive">
-              <div class="mina-card__header">
-                <span class="mina-badge mina-badge--primary">Interactive liquid</span>
-                <h3 class="mina-card__title mina-mt-2">Open activity</h3>
-                <p class="mina-card__subtitle">操作可能な液体ガラス面</p>
-              </div>
-              <div class="mina-card__body"><span class="mina-card__action">アクティビティを見る <span aria-hidden="true">→</span></span></div>
-            </article>
-          </div>
-        </section>
+        <div class="mina-grid mina-grid--2">
+          <article class="mina-card mina-card--static">
+            <div class="mina-card__header">
+              <span class="mina-badge mina-badge--outline">情報表示</span>
+              <h3 class="mina-card__title mina-mt-2">System health</h3>
+              <p class="mina-card__subtitle">読み取り専用のglass面</p>
+            </div>
+            <div class="mina-card__body"><p class="mina-text-muted">APIとワーカーは正常に稼働しています。</p></div>
+          </article>
+          <a class="mina-card mina-card--interactive" href="#tabs-heading">
+            <div class="mina-card__header">
+              <span class="mina-badge mina-badge--primary">操作対象</span>
+              <h3 class="mina-card__title mina-mt-2">Open activity</h3>
+              <p class="mina-card__subtitle">hover / focus / arrow affordance</p>
+            </div>
+            <div class="mina-card__body"><span class="mina-card__action">アクティビティを見る <span aria-hidden="true">→</span></span></div>
+          </a>
+        </div>
 
-        <section class="mina-stack mina-stack--4" aria-labelledby="surface-heading">
-          <div class="mina-stack mina-stack--1">
-            <p class="mina-eyebrow">Surface hierarchy</p>
-            <h2 class="mina-h2" id="surface-heading">見た目が違う理由をクラスで表す</h2>
+        <div data-mina-tabs id="tabs-heading">
+          <div class="mina-tabs" role="tablist" aria-label="アクティビティの種類">
+            <button class="mina-tabs__tab" type="button" data-mina-tab="overview" role="tab" aria-selected="true" aria-controls="overview">概要</button>
+            <button class="mina-tabs__tab" type="button" data-mina-tab="events" role="tab" aria-selected="false" aria-controls="events" tabindex="-1">イベント</button>
+            <button class="mina-tabs__tab" type="button" data-mina-tab="members" role="tab" aria-selected="false" aria-controls="members" tabindex="-1">メンバー</button>
           </div>
-          <div class="mina-grid mina-grid--auto">
-            <article class="mina-card mina-card--static">
-              <div class="mina-card__header">
-                <span class="mina-badge mina-badge--outline">情報表示</span>
-                <h3 class="mina-card__title mina-mt-2">System health</h3>
-                <p class="mina-card__subtitle">読み取り専用の標準面</p>
-              </div>
-              <div class="mina-card__body mina-stack mina-stack--2">
-                <p class="mina-text-muted">APIとワーカーは正常に稼働しています。</p>
-                <span class="mina-text-success">99.98% uptime</span>
-              </div>
-            </article>
+          <section id="overview" class="mina-tabs__panel" role="tabpanel"><p class="mina-text-muted">左右矢印キー、Home、Endで移動できます。</p></section>
+          <section id="events" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">イベントログを表示します。</p></section>
+          <section id="members" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">参加メンバーを表示します。</p></section>
+        </div>
 
-            <a class="mina-card mina-card--interactive" href="#tabs-heading">
-              <div class="mina-card__header">
-                <span class="mina-badge mina-badge--primary">操作対象</span>
-                <h3 class="mina-card__title mina-mt-2">Open activity</h3>
-                <p class="mina-card__subtitle">リンクカードはhover / focusで浮き上がる</p>
-              </div>
-              <div class="mina-card__body mina-stack mina-stack--2">
-                <p class="mina-text-muted">操作可能なカードだけにmina-card--interactiveを追加。</p>
-                <span class="mina-card__action">アクティビティを見る <span aria-hidden="true">→</span></span>
-              </div>
-            </a>
-
-            <article class="mina-card mina-card--static mina-card--solid">
-              <div class="mina-card__header">
-                <span class="mina-badge mina-badge--glass">前景面</span>
-                <h3 class="mina-card__title mina-mt-2">Release notes</h3>
-                <p class="mina-card__subtitle">solid surfaceで本文を安定して読む</p>
-              </div>
-              <div class="mina-card__body"><p class="mina-text-muted">透明度を抑えた面は情報量の多いエリア向きです。</p></div>
-            </article>
-          </div>
-        </section>
-
-        <section class="mina-grid mina-grid--wide" aria-labelledby="tabs-heading">
-          <div class="mina-stack mina-stack--4">
-            <div class="mina-stack mina-stack--1">
-              <p class="mina-eyebrow">Interaction</p>
-              <h2 class="mina-h2" id="tabs-heading">Tabs, forms and feedback</h2>
-            </div>
-            <div data-mina-tabs>
-              <div class="mina-tabs" role="tablist" aria-label="アクティビティの種類">
-                <button class="mina-tabs__tab" type="button" data-mina-tab="overview" role="tab" aria-selected="true" aria-controls="overview">概要</button>
-                <button class="mina-tabs__tab" type="button" data-mina-tab="events" role="tab" aria-selected="false" aria-controls="events" tabindex="-1">イベント</button>
-                <button class="mina-tabs__tab" type="button" data-mina-tab="members" role="tab" aria-selected="false" aria-controls="members" tabindex="-1">メンバー</button>
-              </div>
-              <section id="overview" class="mina-tabs__panel" role="tabpanel"><p class="mina-text-muted">左右矢印キー、Home、Endで移動できます。</p></section>
-              <section id="events" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">イベントログを表示します。</p></section>
-              <section id="members" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">参加メンバーを表示します。</p></section>
-            </div>
-            <div class="mina-cluster">
-              <button class="mina-btn mina-btn--primary" type="button" data-mina-toggle="#demo-modal">Open modal</button>
-              <button class="mina-btn" type="button" onclick="MinaUI.toast('設定を保存しました', { title: 'Saved', tone: 'success' })">Show toast</button>
-            </div>
-          </div>
-
-          <aside class="mina-panel mina-panel--accent mina-stack mina-stack--4" aria-labelledby="controls-heading">
-            <div class="mina-stack mina-stack--1">
-              <p class="mina-eyebrow">Common primitives</p>
-              <h2 class="mina-h3" id="controls-heading">ページ固有CSSなしの構成</h2>
-            </div>
-            <div class="mina-field">
-              <label class="mina-field__label" for="demo-name">表示名</label>
-              <input class="mina-input" id="demo-name" type="text" value="Mina user">
-              <span class="mina-field__hint">共通field / input API</span>
-            </div>
-            <div class="mina-dropdown">
-              <button class="mina-btn" type="button" data-mina-toggle aria-haspopup="menu" aria-expanded="false">Quality: balanced</button>
-              <div class="mina-dropdown__menu" role="menu">
-                <button class="mina-dropdown__item" type="button" data-mina-dropdown-item data-value="quality">Quality</button>
-                <button class="mina-dropdown__item" type="button" data-mina-dropdown-item data-value="balanced">Balanced</button>
-                <button class="mina-dropdown__item" type="button" data-mina-dropdown-item data-value="performance">Performance</button>
-              </div>
-            </div>
-            <div class="mina-stat">
-              <span class="mina-stat__label">Glass usage</span>
-              <strong class="mina-stat__value">1 / 4</strong>
-              <span class="mina-stat__delta">low-cost composition</span>
-            </div>
-          </aside>
-        </section>
-      </section>
-    </main>
-  </div>
+        <div class="mina-cluster">
+          <button class="mina-btn mina-btn--primary" type="button" data-mina-toggle="#demo-modal">Open modal</button>
+          <button class="mina-btn mina-btn--glass" type="button" onclick="MinaUI.toast('設定を保存しました', { title: 'Saved', tone: 'success' })">Show toast</button>
+        </div>
+      </div>
+    </section>
+  </main>
 
   <section class="mina-modal" id="demo-modal" aria-hidden="true">
     <div class="mina-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="demo-modal-title">
@@ -168,15 +145,15 @@
   <script src="../minaui.glass.js" defer></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
-      if (window.MinaGlass) {
-        window.demoMinaGlass = window.MinaGlass.autoInit({
-          backend: 'auto',
-          quality: 'high',
-          maxCards: 2,
-          saturate: 1.2,
-          background: 'assets/mina-glass-demo.svg'
-        });
-      }
+      if (!window.MinaGlass) return;
+      window.demoMinaGlass = window.MinaGlass.autoInit({
+        background: 'assets/vrc-background.jpg',
+        backend: 'auto',
+        quality: 'high',
+        maxCards: 2,
+        saturate: 1.5,
+        whiteLevel: 0
+      });
     });
   </script>
 </body>
