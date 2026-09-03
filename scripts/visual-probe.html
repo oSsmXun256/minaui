@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>liquid probe</title>
+<script src="../minaui.glass.js"></script>
+</head>
+<body style="margin:0;">
+<pre id="probe-result">pending</pre>
+<canvas id="scene-src" width="1024" height="1024" style="display:none;"></canvas>
+<div id="stage" style="position:relative;width:1400px;height:900px;">
+  <div id="glass" data-mina-liquid style="position:absolute;left:300px;top:250px;width:400px;height:260px;"></div>
+</div>
+<script>
+"use strict";
+function analyzeStage(stageCanvas, rect) {
+  const stageCtx = stageCanvas.getContext("2d");
+  const W = stageCanvas.width, H = stageCanvas.height;
+  const img = stageCtx.getImageData(0, 0, W, H).data;
+  const get = (x, y) => { const i = (y * W + x) * 4; return [img[i], img[i + 1], img[i + 2]]; };
+
+  // Scene has horizontal bands: background at (20, y) is the un-refracted row reference.
+  function rowDeviation(y, x0, x1) {
+    let sum = 0, n = 0;
+    for (let x = x0; x <= x1; x++) {
+      const a = get(x, y), b = get(20, y);
+      sum += Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+      n++;
+    }
+    return sum / (n * 3);
+  }
+  function whiteFrac(x0, y0, x1, y1) {
+    let n = 0, f = 0;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const p = get(x, y); n++;
+      if (p[0] > 242 && p[1] > 242 && p[2] > 242) f++;
+    }
+    return f / n;
+  }
+  function channelAsym(y, x0, x1) {
+    let sum = 0, n = 0;
+    for (let x = x0; x <= x1; x++) { const p = get(x, y); sum += Math.abs(p[0] - p[1]) + Math.abs(p[2] - p[1]); n++; }
+    return sum / (n * 2);
+  }
+  const L = rect.L, R = rect.R, T = rect.T, B = rect.B;
+  const cx = Math.round((L + R) / 2), cy = Math.round((T + B) / 2);
+  return {
+    deviation: {
+      center: +rowDeviation(cy, cx - 80, cx + 80).toFixed(2),
+      edgeLeft: +rowDeviation(cy, L + 3, L + 16).toFixed(2),
+      edgeRight: +rowDeviation(cy, R - 16, R - 3).toFixed(2)
+    },
+    white: {
+      center: +whiteFrac(cx - 80, cy - 60, cx + 80, cy + 60).toFixed(4),
+      edge: +whiteFrac(cx - 80, T + 3, cx + 80, T + 26).toFixed(4)
+    },
+    asym: {
+      left: +channelAsym(cy, L + 3, L + 16).toFixed(2),
+      right: +channelAsym(cy, R - 16, R - 3).toFixed(2),
+      center: +channelAsym(cy, cx - 80, cx + 80).toFixed(2)
+    }
+  };
+}
+async function run() {
+  const out = {};
+  const glassEl = document.getElementById("glass");
+  const probeRect = glassEl.getBoundingClientRect();
+  if (probeRect.top < 0 || probeRect.bottom > window.innerHeight) {
+    out.error = "glass rect out of viewport";
+    document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
+    return;
+  }
+  const sceneCanvas = document.getElementById("scene-src");
+  const sctx = sceneCanvas.getContext("2d");
+  const bands = ["#101018", "#d94f8a", "#f2efe6", "#7a4fd9", "#101018", "#3fbfc9", "#f2efe6", "#d94f8a"];
+  for (let i = 0; i < bands.length; i++) { sctx.fillStyle = bands[i]; sctx.fillRect(0, i * 128, 1024, 128); }
+  sctx.strokeStyle = "#000"; sctx.lineWidth = 3;
+  for (let x = 0; x <= 1024; x += 48) { sctx.beginPath(); sctx.moveTo(x, 0); sctx.lineTo(x, 1024); sctx.stroke(); }
+  sctx.fillStyle = "#000"; sctx.font = "bold 110px monospace"; sctx.fillText("PROBE 123", 60, 600);
+
+  const canvas = document.createElement("canvas");
+  canvas.id = "probe-gl";
+  document.body.appendChild(canvas);
+
+  const liquid = new MinaLiquid({
+    canvas, backend: "webgl", quality: "high",
+    source: { type: "canvas", el: sceneCanvas },
+    glass: { refraction: 0.22, blur: 12, dispersion: 0.045, fresnel: 0.22, edgeWidth: 0.2 }
+  });
+  if (liquid.backend !== "webgl") {
+    out.error = "no webgl backend: " + liquid.backend;
+    document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
+    return;
+  }
+  function forceFrame() {
+    liquid._sceneDirty = true;
+    liquid._geometryDirty = true;
+    liquid._frame();
+  }
+  forceFrame();
+
+  const gl = liquid.getContext();
+  const w = canvas.width, h = canvas.height;
+  const stage = document.createElement("canvas");
+  stage.width = w; stage.height = h;
+  const stageCtx = stage.getContext("2d");
+
+  function snap() {
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this.px);
+    const img = new ImageData(new Uint8ClampedArray(this.px), w, h);
+    stageCtx.putImageData(img, 0, 0);
+    stageCtx.save();
+    stageCtx.translate(0, h); stageCtx.scale(1, -1);
+    stageCtx.putImageData(img, 0, 0);
+    stageCtx.restore();
+  }
+  // simpler: readPixels is bottom-up; flip rows manually into ImageData
+  function grab() {
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const flipped = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      const srcRow = y, dstRow = h - 1 - y;
+      flipped.set(px.subarray(srcRow * w * 4, srcRow * w * 4 + w * 4), dstRow * w * 4);
+    }
+    stageCtx.putImageData(new ImageData(flipped, w, h), 0, 0);
+  }
+
+  const rect = glassEl.getBoundingClientRect();
+  const R = { L: Math.round(rect.left), R: Math.round(rect.right), T: Math.round(rect.top), B: Math.round(rect.bottom) };
+  out.rect = R;
+
+  grab();
+  Object.assign(out, analyzeStage(stage, R));
+
+  // dispersion on/off
+  liquid.setGlass({ dispersion: 0 });
+  forceFrame(); grab();
+  const asymOff = analyzeStage(stage, R).asym;
+  liquid.setGlass({ dispersion: 0.045 });
+  forceFrame(); grab();
+  out.dispersion = { offLeftPlusRight: +(asymOff.left + asymOff.right).toFixed(2) };
+
+  // DOM sync: move element right; old region must go back to plain scene (~0)
+  glassEl.style.left = "900px";
+  forceFrame(); grab();
+  const moved = analyzeStage(stage, { L: 900, R: 1300, T: R.T, B: R.B });
+  const old = analyzeStage(stage, { L: R.L + 3, R: R.L + 160, T: R.T, B: R.B });
+  out.domSync = {
+    movedEdgeLeft: moved.deviation.edgeLeft,
+    oldRegionCenterDev: old.deviation.center
+  };
+  glassEl.style.left = "300px";
+  forceFrame();
+
+  // Context lost -> fallback classes
+  canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+  out.contextLost = { backend: liquid.backend, state: liquid.state, glassClass: glassEl.className };
+  canvas.dispatchEvent(new Event("webglcontextrestored"));
+
+  liquid.destroy();
+  out.destroyed = liquid.state;
+  document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
+}
+window.addEventListener("load", () => run().catch((e) => {
+  document.getElementById("probe-result").textContent = "PROBE_ERROR " + (e && e.stack || e);
+}));
+</script>
+</body>
+</html>

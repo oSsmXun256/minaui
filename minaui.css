@@ -391,17 +391,22 @@ a.mina-link { text-decoration: underline; text-underline-offset: .18em; }
 
 /* Surface/elevation contract (three distinct surface levels):
    - .mina-card / .mina-panel are the standard translucent surfaces:
-     background + border + shadow only. No backdrop-filter, so pages can
-     stack dozens of them without multiplying GPU layers.
+      background + border + shadow only. No backdrop-filter, so pages can
+      stack dozens of them without multiplying GPU layers.
    - .mina-glass is the explicit opt-in to frosted glass (real
-     backdrop-filter). Combine it when a surface really sits over busy
-     imagery: `class="mina-card mina-glass"`.
-   - .mina-glass--liquid swaps frosted glass for the WebGL lens surface.
+      backdrop-filter). Combine it when a surface really sits over busy
+      imagery: `class="mina-card mina-glass"`.
+   - .mina-liquid / [data-mina-liquid] marks a Liquid Glass lens element for
+      the optional WebGL renderer (minaui.glass.js, class MinaLiquid). By
+      itself it renders as a solid translucent surface so content stays
+      readable without JS; the renderer swaps the appearance via state
+      classes (mina-liquid-gl / mina-liquid-native / mina-liquid-static).
+   - .mina-glass--liquid is the deprecated V2 alias of .mina-liquid.
    - .mina-card--static / .mina-card--interactive express interaction intent
-     without changing the shared surface identity.
+      without changing the shared surface identity.
    - --mina-shadow-sm is for compact/supporting surfaces, --mina-shadow-md is
-     the standard surface height and --mina-shadow-lg is for transient or
-     strongly elevated layers. */
+      the standard surface height and --mina-shadow-lg is for transient or
+      strongly elevated layers. */
 .mina-card, .mina-panel {
   border: 1px solid var(--mina-glass-border);
   border-radius: var(--mina-radius-xl);
@@ -424,6 +429,31 @@ a.mina-link { text-decoration: underline; text-underline-offset: .18em; }
 .mina-gpu { transform: translateZ(0); will-change: transform; }
 .mina-glass--light { background: var(--mina-glass-bg-light); }
 .mina-glass--dark { background: rgba(0, 0, 0, .2); border-color: rgba(255, 255, 255, .2); }
+/* Liquid Glass (WebGL, minaui.glass.js V3). The element itself is only a
+   geometry holder: position, size and radius feed the renderer. Without JS
+   (or before init) it degrades to a readable translucent surface. */
+.mina-liquid, [data-mina-liquid] {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--mina-glass-border);
+  border-radius: var(--mina-radius-xl);
+  background: var(--mina-card-bg);
+  box-shadow: var(--mina-shadow-md);
+}
+/* Renderer state classes (applied by minaui.glass.js):
+   -gl  = WebGL backend owns the pixels (element becomes fully transparent)
+   -native = CSS backdrop-filter fallback
+   -static = last-resort translucent surface (same as the base style) */
+.mina-liquid-gl {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0,0,0,.45), 0 1px 12px rgba(0,0,0,.25);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Deprecated V2 liquid alias — keep rendering sane, prefer .mina-liquid. */
 .mina-glass--liquid, .mina-glass-liquid { position: relative; overflow: hidden; color: #fff; background: transparent; border: 0; border-radius: var(--mina-radius-xl); box-shadow: none; text-shadow: 0 1px 3px rgba(0,0,0,.45), 0 1px 12px rgba(0,0,0,.25); -webkit-backdrop-filter: none; backdrop-filter: none; }
 /* MinaGlass fallback backends (applied automatically by minaui.glass.js).
    native = CSS backdrop-filter per element, static = translucent surface only. */

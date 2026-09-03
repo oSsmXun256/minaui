@@ -38,6 +38,7 @@ export class FakeEvent {
 export class FakeElement {
   constructor(tagName, attrs = {}) {
     this.tagName = tagName.toUpperCase();
+    this.nodeType = 1;
     this.parentNode = null;
     this.childNodes = [];
     this.attributes = {};
@@ -189,6 +190,7 @@ function matchesDeep(el, selector) {
 export function createDocument() {
   const doc = new FakeElement("#document");
   doc.tagName = "#DOCUMENT";
+  doc.nodeType = 9;
   doc.readyState = "complete";
   doc.documentElement = new FakeElement("html");
   doc.documentElement._doc = doc;
@@ -197,6 +199,10 @@ export function createDocument() {
   doc.appendChild(doc.documentElement);
   doc.documentElement.appendChild(doc.body);
   doc.activeElement = doc.body;
+  // FakeElement#addEventListener exists via _listeners; document-level
+  // listeners flow through the same dispatchEvent bubbling path.
+  doc.addEventListener = FakeElement.prototype.addEventListener.bind(doc);
+  doc.removeEventListener = FakeElement.prototype.removeEventListener.bind(doc);
 
   doc.querySelectorAll = (selector) => {
     const out = [];

@@ -43,9 +43,9 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 
 | 目的 | 使うクラス | 例 |
 | :-- | :-- | :-- |
-| 一覧・本文・情報表示の標準面 | `mina-card` / `mina-panel` | 記事カード、ダッシュボードのウィジェット |
-| 背景に写真やグラデーションが透けて見えるべき面 | `mina-card mina-glass` | ヒーローの帯、フローティングナビ、プレビューカード |
-| 主役の面に屈折エフェクトを与える(1ページに数枚まで) | `mina-card mina-glass mina-glass--liquid` | プロフィール面、注目コンテンツ |
+| 一覧・本文・情報表示の標準面 (Surface) | `mina-card` / `mina-panel` | 記事カード、ダッシュボードのウィジェット |
+| 背景に写真やグラデーションが透けて見えるべき面 (Frosted Glass) | `mina-card mina-glass` | ヒーローの帯、フローティングナビ、プレビューカード |
+| 主役の面に屈折エフェクトを与える (Liquid Glass, 1ページに数枚まで) | `mina-liquid` / `data-mina-liquid` | プロフィール面、注目コンテンツ |
 
 ```html
 <section class="mina-glass mina-glass--light mina-p-6">すりガラスの面(透過面より目立たせたい帯など)</section>
@@ -70,20 +70,23 @@ MinaUI のコンポーネントは、次の 3 層に分かれています。
 
 ### すりガラスと液体ガラス
 
-v0.2.0 から `mina-card` / `mina-panel` はblurを持ちません(透過面)。blurが必要な面だけ `mina-glass` を追加します。WebGL2の屈折表現が要る要素には `mina-glass--liquid` を追加し、`minaui.glass.js` の `MinaGlass.autoInit()` を呼びます。
+blurが必要な面だけ `mina-glass` を追加します。WebGL2の屈折表現が要る主役面には `mina-liquid` を付け、`minaui.glass.js` (MinaLiquid V3) を読み込みます。
 
 ```html
-<article class="mina-card mina-glass mina-glass--liquid">WebGL2で液体ガラスになる</article>
+<article class="mina-liquid" data-mina-liquid>MinaLiquidで液体ガラスになる主役面</article>
+<article class="mina-card mina-glass">backdrop-filterのすりガラス面</article>
 ```
+
+MinaLiquid は **レンダラ自身が管理する Scene (image / video / canvas / gradient)** を屈折させます。DOMをcaptureしないため、背景写真は `new MinaLiquid({ source: {...} })` として渡します。詳細・制約・移行は `LIQUID-GLASS.md` を参照してください。
 
 低性能端末では `data-style="flat"` / `data-style="solid"` またはPerformance Modeを明示的に使えます。コンポジットレイヤーの明示的な昇格が必要な特殊ケースは `.mina-gpu` を使ってください。
 
-**Composition例 — プロフィールページ**: 背景に `mina-backdrop`(写真) + `mina-scrim`(可読性マスク)。主役のプロフィール面は `mina-glass--liquid`。その下の写真サムネイルは `mina-media-tile`(透過面+角丸)。ボタン群は `mina-btn--glass`。この構成ならGPUレイヤーは液体ガラス1枚とボタン数個だけです。
+**Composition例 — プロフィールページ**: 背景に `mina-backdrop`(写真) + `mina-scrim`(可読性マスク)。主役のプロフィール面は `mina-liquid`(Sceneに同じ写真を渡す)。その下の写真サムネイルは `mina-media-tile`(透過面+角丸)。ボタン群は `mina-btn--glass`。この構成ならGPUレイヤーは液体ガラス1枚とボタン数個だけです。
 
 **悪い使用例**:
 
 - ページ内の全カードに `mina-glass` を付ける → 階層が消え、ブラーは「ないもの」として知覚され、GPUレイヤーだけが増える。標準は `mina-card`。
-- 見た目の演出だけ `mina-glass--liquid` を全面に敷く → WebGLはページ全面の背景を描画する仕組みのため、背景写真を渡さないとプレースホルダーが全面を覆う。
+- Liquid Glass を全面に敷く → Hero / Showcase 専用のオプション機能です。Scene はレンダラが管理するため、全カードを液体化する設計は想定していません。
 - `mina-card--interactive` を全カードに付ける → 何がクリックできるのか分からなくなる。
 - `mina-gpu` や `translateZ(0)` を広範囲に使う → レイヤー昇格はメモリを直接消費する。ドロワー移動など一時的な用途に限る。
 
@@ -97,20 +100,21 @@ v0.2.0 から `mina-card` / `mina-panel` はblurを持ちません(透過面)。
 <html data-mina-performance="performance">
 ```
 
-- `quality` — 全エフェクト。animated backdrop-filter（`mina-glass-blur-in` 等）も有効。MinaGlassは25-tapシェーダー。
-- `balanced` — 静止見た目はqualityのまま、blurアニメーションをopacityフェードに置き換え、MinaGlassは9-tapシェーダーに切り替わります。
-- `performance` — blurの縮小・無効化、glow/巨大影の削減、無限系の装飾アニメ停止（skeletonのshimmerを含む）。面の不透明度を上げて可読性を維持します。
+- `quality` — 全エフェクト。animated backdrop-filter（`mina-glass-blur-in` 等）も有効。MinaLiquidは高画質pipeline。
+- `balanced` — 静止見た目はqualityのまま、blurアニメーションをopacityフェードに置き換え、MinaLiquidは2-level pyramid + dispersion減衰に切り替わります。
+- `performance` — blurの縮小・無効化、glow/巨大影の削減、無限系の装飾アニメ停止（skeletonのshimmerを含む）。面の不透明度を上げて可読性を維持します。MinaLiquidはmip直接 + dispersion無効。
 
 `prefers-reduced-motion` が指定された環境では、Performance Modeより先にモーション全体が抑制されます。
 
-### MinaGlassとWebGL液体ガラス
+### MinaLiquid と WebGL液体ガラス
 
-WebGLを使う液体ガラスは `.mina-glass--liquid` / `.mina-glass-liquid` を要素に付け、`minaui.glass.js` を読み込んで `MinaGlass.autoInit()` を呼びます。詳細なオプション（`quality` / `backend` / `renderScale` / `maxPixelCount`）とBackend選択（`webgl` / `native` / `static`）は README の「MinaGlass WebGL」を参照してください。
+WebGLを使う液体ガラスは `.mina-liquid` / `[data-mina-liquid]` を要素に付け、`minaui.glass.js` を読み込んで `new MinaLiquid({...})` を呼びます。Liquid Glass は Hero / Showcase 向けのオプション機能で、標準面ではありません。
 
-- WebGL backendは液体ガラス面の外側も含め、**ページ全面を背景テクスチャで描画します**。必ず `background` を渡すか `uploadTexture()` を呼んでください。全面描画が不要なページでは `backend: "native"` を選ぶか、液体ガラス自体を使いません。
+- MinaLiquid はレンダラが管理する Scene (image / video / canvas / gradient) を屈折させます。**DOM を capture しているわけではありません。**
+- 中央は背景をほぼそのまま透し、屈折・Fresnel・blur はエッジ近傍だけに集中します。中央が激しく歪むのは仕様ではありません。
 - Safari / iOS では `auto` がCSS backdrop-filterの `native` backendを選び、固定キャンバスの座標追跡が非同期スクロールでずれる問題を回避します。
 - Firefox や WebGL2が使えない環境でも native/static へ自動フォールバックし、Context Lostでもページが壊れません。復元時は自動でWebGLへ再構築します。
-- scrollはdirtyフラグ経由で1つのRAFにまとめられ、liquid要素自体のリサイズもResizeObserverで追跡されます。`destroy()` でリスナー・RAF・WebGLリソースがすべて解放されます。
+- scrollはdirtyフラグ経由で1つのRAFにまとめられ、liquid要素自体のリサイズもResizeObserverで追跡されます。viewport外・display:none・0サイズの要素は自動で描画対象から外れます。`destroy()` でリスナー・RAF・WebGLリソースがすべて解放されます。
 - Liquid Glass以外の `.mina-glass` 全般も Performance Mode の対象です（blur削減、影削減など）。
 
 ### Layer契約
@@ -220,7 +224,7 @@ Liquid Glass用キャンバスを含む重ね順は変数で定義されてい�
 - `data-style="flat"` を指定すれば、MinaUI の影とブラーを無効にして写真の視認性を優先できる。
 - `prefers-reduced-motion` は MinaUI と既存エフェクトの両方で尊重する。
 
-旧AquaCSS 2.0のセレクタ、変数、エフェクト、AquaGlass APIの全対応表は `AQUA-MIGRATION.md` を参照してください。互換レイヤーが必要な段階移行では `minaui-aqua-compat.css` を `minaui.css` の後に読み込み、移行完了後に外します。WebGLを使う場合は `minaui.glass.js` をページ単位で追加します。
+旧AquaCSS 2.0のセレクタ、変数、エフェクト、AquaGlass APIの全対応表は `AQUA-MIGRATION.md` を参照してください。互換レイヤーが必要な段階移行では `minaui-aqua-compat.css` を `minaui.css` の後に読み込み、移行完了後に外します。WebGL Liquid Glassを使う場合は `minaui.glass.js` (MinaLiquid V3) をページ単位で追加します。旧 `MinaGlass` APIは非推奨アダプタ経由で動作し続けます (LIQUID-GLASS.md「Migration」参照)。
 
 ## アクセシビリティ
 

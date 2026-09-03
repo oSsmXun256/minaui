@@ -3,214 +3,204 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="MinaUIのglass surfaceとWebGL liquid glassをVRCプロフィール風に確認するデモ">
-  <title>MinaUI — Glass Profile Demo</title>
+  <meta name="description" content="MinaLiquid V3 (WebGL Liquid Glass) と CSS Frosted Glass / Static Surface を比較検証するデモ">
+  <title>MinaUI — Liquid Glass Lab</title>
   <link rel="stylesheet" href="../minaui.css">
+  <style>
+    /* Demo-only layout helpers (MinaUI classes carry the rest). */
+    .lab-stage { position: relative; min-height: 72vh; }
+    .lab-controls { position: sticky; top: 0; z-index: var(--mina-z-sticky); }
+    .lab-slider { display: grid; grid-template-columns: 7.5rem 1fr 3.5rem; align-items: center; gap: .5rem; font-size: .75rem; }
+    .lab-slider input[type="range"] { width: 100%; accent-color: var(--mina-primary); }
+  </style>
 </head>
 <body>
-  <!-- vrc.ossmxun.netと同じく、写真はWebGL canvasが背景として描画する。 -->
-  <canvas id="mina-glcanvas" aria-hidden="true"></canvas>
-  <div class="mina-scrim" aria-hidden="true"></div>
+  <main class="mina-content mina-page">
+    <header class="mina-stack mina-stack--2 mina-mb-6">
+      <p class="mina-eyebrow mina-text-primary">MinaLiquid V3</p>
+      <h1 class="mina-h1">Liquid Glass Lab</h1>
+      <p class="mina-text-muted">
+        WebGL Liquid Glass は専用レンダラが管理する Scene を屈折させます。DOM はキャプチャされません。
+        中央はフラットに保ち、エッジだけで屈折・ハイライトが起こるのが正しい見た目です。
+      </p>
+    </header>
 
-  <main class="mina-content">
-    <section class="mina-page mina-section--tight" aria-labelledby="profile-heading">
-      <div class="mina-container--md">
-        <!-- Demo control bar: theme / glass quality / fallback backends.
-             すべて公開API (MinaUI.setTheme / MinaGlass.autoInit + destroy)のみで動作する。 -->
-        <div class="mina-cluster mina-cluster--between mina-mb-4">
-          <div class="mina-cluster" role="group" aria-label="テーマ切替">
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-mina-theme="dark">Dark</button>
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-mina-theme="light">Light</button>
-          </div>
-          <div class="mina-cluster" role="group" aria-label="ガラス品質">
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-quality="high">High</button>
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-quality="balanced">Balanced</button>
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-quality="performance">Performance</button>
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-backend="native">Native fallback</button>
-            <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-demo-backend="static">Static fallback</button>
+    <!-- Controls -->
+    <section class="lab-controls mina-card mina-card--static mina-p-4 mina-mb-4" aria-label="デモ操作">
+      <div class="mina-cluster mina-cluster--between mina-wrap">
+        <div class="mina-cluster" role="group" aria-label="シーンソース">
+          <span class="mina-label">Scene</span>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="photo">Photo</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="pattern">Pattern</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="gradient">Gradient</button>
+        </div>
+        <div class="mina-cluster" role="group" aria-label="品質">
+          <span class="mina-label">Quality</span>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-quality="high">High</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-quality="balanced">Balanced</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-quality="performance">Performance</button>
+        </div>
+        <div class="mina-cluster" role="group" aria-label="バックエンド">
+          <span class="mina-label">Surface</span>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-backend="liquid">Liquid</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-backend="native">Frosted</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-backend="static">Static</button>
+        </div>
+      </div>
+      <div class="mina-grid mina-grid--4 mina-mt-3" aria-label="ガラスパラメータ">
+        <label class="lab-slider"><span class="mina-caption">refraction</span><input type="range" min="0" max="0.6" step="0.01" value="0.22" data-lab-param="refraction"><output>0.22</output></label>
+        <label class="lab-slider"><span class="mina-caption">blur</span><input type="range" min="0" max="25" step="1" value="12" data-lab-param="blur"><output>12</output></label>
+        <label class="lab-slider"><span class="mina-caption">dispersion</span><input type="range" min="0" max="0.2" step="0.005" value="0.045" data-lab-param="dispersion"><output>0.045</output></label>
+        <label class="lab-slider"><span class="mina-caption">fresnel</span><input type="range" min="0" max="1" step="0.05" value="0.22" data-lab-param="fresnel"><output>0.22</output></label>
+      </div>
+      <p class="mina-caption mina-mt-3" id="lab-status" role="status">backend: — / quality: —</p>
+    </section>
+
+    <!-- Stage: liquid glass elements over the WebGL scene -->
+    <section class="lab-stage mina-stack mina-stack--4" aria-label="ガラス比較ステージ">
+      <article class="mina-liquid mina-p-6" data-mina-liquid data-mina-refraction="1" aria-labelledby="hero-title">
+        <div class="mina-stack mina-stack--2">
+          <h2 class="mina-h2" id="hero-title">Hero liquid card</h2>
+          <p class="mina-lead">この面は MinaLiquid (WebGL2) が描画しています。中央は背景がほぼそのまま透け、
+            エッジ近傍だけで屈折・フレネル・スペキュラが発生します。直線や文字がエッジでわずかに曲がるのが正常です。</p>
+          <div class="mina-cluster">
+            <span class="mina-chip">refraction @ edge</span>
+            <span class="mina-chip">fresnel rim</span>
+            <span class="mina-chip">blurred transmission</span>
           </div>
         </div>
-        <p class="mina-caption mina-mb-4" id="glass-status" role="status">backend: — / quality: —</p>
+      </article>
 
-        <article class="mina-card mina-glass mina-glass--liquid mina-card--static" aria-labelledby="profile-heading">
-          <div class="mina-grid mina-grid--3 mina-p-6">
-            <div class="mina-cluster">
-              <img class="mina-avatar mina-avatar--lg" src="assets/vrc-avatar.png" alt="お刺身くん">
-              <div class="mina-stack mina-stack--1">
-                <h1 class="mina-h3" id="profile-heading">お刺身くん</h1>
-                <p class="mina-text-muted">VRChat / Photography</p>
-              </div>
-            </div>
+      <div class="mina-grid mina-grid--3">
+        <article class="mina-liquid mina-p-5" data-mina-liquid data-mina-refraction="1.4" data-mina-blur="16" aria-label="小さな液体ガラス1">
+          <h3 class="mina-h5">Small lens A</h3>
+          <p class="mina-small">refraction 1.4 / blur 16 — 個別 data 属性で上書き。</p>
+        </article>
+        <article class="mina-liquid mina-p-5" data-mina-liquid data-mina-refraction="0.6" data-mina-blur="6" aria-label="小さな液体ガラス2">
+          <h3 class="mina-h5">Small lens B</h3>
+          <p class="mina-small">refraction 0.6 / blur 6 — 弱屈折の比較用。</p>
+        </article>
+        <article class="mina-card mina-glass mina-p-5" aria-label="CSS すりガラス">
+          <h3 class="mina-h5">CSS frosted glass</h3>
+          <p class="mina-small">backdrop-filter ベース。DOM 背面をそのままブラーする Level 2 の面です。</p>
+        </article>
+      </div>
 
-            <div class="mina-stack mina-stack--2">
-              <p class="mina-body">Discordによくいます。VRChatでは写真を撮るのが好きです。</p>
-              <div class="mina-tag-list" aria-label="Interest tags">
-                <span class="mina-chip">写真撮影</span>
-                <span class="mina-chip">ワールド巡り</span>
-                <span class="mina-chip">友達との会話</span>
-              </div>
-            </div>
-
-            <div class="mina-stack mina-stack--2">
-              <div class="mina-grid mina-grid--2">
-                <div class="mina-stat">
-                  <span class="mina-stat__label">活動開始</span>
-                  <strong class="mina-stat__value">2023年11月</strong>
-                </div>
-                <div class="mina-stat">
-                  <span class="mina-stat__label">活動時間</span>
-                  <strong class="mina-stat__value">夜間・週末</strong>
-                </div>
-              </div>
-              <div class="mina-cluster" aria-label="Social links">
-                <a class="mina-btn mina-btn--glass mina-btn--icon" href="https://ossmxun.net" target="_blank" rel="noreferrer" aria-label="Web">↗</a>
-                <a class="mina-btn mina-btn--glass mina-btn--icon" href="https://x.com/os_vrc" target="_blank" rel="noreferrer" aria-label="X">𝕏</a>
-                <a class="mina-btn mina-btn--glass mina-btn--icon" href="https://bsky.app/profile/vrc.ossmxun.net" target="_blank" rel="noreferrer" aria-label="Bluesky">✦</a>
-              </div>
-            </div>
-          </div>
+      <div class="mina-grid mina-grid--2">
+        <article class="mina-card mina-card--static mina-p-5" aria-label="静的サーフェス">
+          <h3 class="mina-h5">Static surface (Level 1)</h3>
+          <p class="mina-small">blurなしの半透明面。数を並べてよい標準面。</p>
+        </article>
+        <article class="mina-liquid mina-p-5" data-mina-liquid aria-label="パターン上の液体ガラス">
+          <h3 class="mina-h5">Lens on lines</h3>
+          <p class="mina-small">Pattern ソースに切り替えると、エッジでの線の屈折が最も分かりやすくなります。</p>
         </article>
       </div>
     </section>
 
-    <section class="mina-container--wide mina-section--tight" aria-labelledby="memories-heading">
-      <div class="mina-cluster mina-cluster--between mina-mb-6">
-        <div class="mina-stack mina-stack--1">
-          <p class="mina-eyebrow mina-text-primary">Memories</p>
-          <h2 class="mina-h2" id="memories-heading">Photo surface</h2>
-        </div>
-        <p class="mina-caption">背景写真はMinaGlassのレンズ源としても使用</p>
-      </div>
-
-      <div class="mina-media-grid">
-        <a class="mina-media-tile mina-card--interactive" href="#interaction-lab">
-          <img src="assets/vrc-photo-01.jpg" alt="VRChatの夕景" loading="lazy">
-          <span class="mina-cover__overlay"><strong>Sunset world</strong><span class="mina-caption">View snapshot →</span></span>
-        </a>
-        <a class="mina-media-tile mina-card--interactive" href="#interaction-lab">
-          <img src="assets/vrc-photo-02.jpg" alt="VRChatの夜景" loading="lazy">
-          <span class="mina-cover__overlay"><strong>Night walk</strong><span class="mina-caption">View snapshot →</span></span>
-        </a>
-        <a class="mina-media-tile mina-card--interactive" href="#interaction-lab">
-          <img src="assets/vrc-photo-03.jpg" alt="VRChatのワールド" loading="lazy">
-          <span class="mina-cover__overlay"><strong>World memories</strong><span class="mina-caption">View snapshot →</span></span>
-        </a>
-      </div>
-    </section>
-
-    <section class="mina-container--wide mina-section--tight" id="interaction-lab" aria-labelledby="components-heading">
-      <div class="mina-panel mina-panel--accent mina-stack mina-stack--4">
-        <div class="mina-stack mina-stack--1">
-          <p class="mina-eyebrow">MinaUI primitives</p>
-          <h2 class="mina-h2" id="components-heading">共通コンポーネントの使い分け</h2>
-          <p class="mina-text-muted">VRC風の見た目を保ったまま、情報面と操作面の意図をmodifierで伝えます。</p>
-        </div>
-
-        <div class="mina-grid mina-grid--2">
-          <article class="mina-card mina-card--static">
-            <div class="mina-card__header">
-              <span class="mina-badge mina-badge--outline">情報表示</span>
-              <h3 class="mina-card__title mina-mt-2">System health</h3>
-              <p class="mina-card__subtitle">読み取り専用のglass面</p>
-            </div>
-            <div class="mina-card__body"><p class="mina-text-muted">APIとワーカーは正常に稼働しています。</p></div>
-          </article>
-          <a class="mina-card mina-card--interactive" href="#tabs-heading">
-            <div class="mina-card__header">
-              <span class="mina-badge mina-badge--primary">操作対象</span>
-              <h3 class="mina-card__title mina-mt-2">Open activity</h3>
-              <p class="mina-card__subtitle">hover / focus / arrow affordance</p>
-            </div>
-            <div class="mina-card__body"><span class="mina-card__action">アクティビティを見る <span aria-hidden="true">→</span></span></div>
-          </a>
-        </div>
-
-        <div data-mina-tabs id="tabs-heading">
-          <div class="mina-tabs" role="tablist" aria-label="アクティビティの種類">
-            <button class="mina-tabs__tab" type="button" data-mina-tab="overview" role="tab" aria-selected="true" aria-controls="overview">概要</button>
-            <button class="mina-tabs__tab" type="button" data-mina-tab="events" role="tab" aria-selected="false" aria-controls="events" tabindex="-1">イベント</button>
-            <button class="mina-tabs__tab" type="button" data-mina-tab="members" role="tab" aria-selected="false" aria-controls="members" tabindex="-1">メンバー</button>
-          </div>
-          <section id="overview" class="mina-tabs__panel" role="tabpanel"><p class="mina-text-muted">左右矢印キー、Home、Endで移動できます。</p></section>
-          <section id="events" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">イベントログを表示します。</p></section>
-          <section id="members" class="mina-tabs__panel" role="tabpanel" hidden><p class="mina-text-muted">参加メンバーを表示します。</p></section>
-        </div>
-
-        <div class="mina-cluster">
-          <button class="mina-btn mina-btn--primary" type="button" data-mina-toggle="#demo-modal">Open modal</button>
-          <button class="mina-btn mina-btn--glass" type="button" onclick="MinaUI.toast('設定を保存しました', { title: 'Saved', tone: 'success' })">Show toast</button>
-          <div class="mina-dropdown">
-            <button class="mina-btn mina-btn--glass" type="button" data-mina-toggle="" aria-haspopup="menu" aria-expanded="false">
-              <span data-mina-dropdown-value>Menu</span>
-              <span aria-hidden="true">▾</span>
-            </button>
-            <div class="mina-dropdown__menu" role="menu" aria-hidden="true" inert>
-              <button class="mina-dropdown__item" type="button" role="menuitem" data-mina-dropdown-item data-value="profile">プロフィール</button>
-              <button class="mina-dropdown__item" type="button" role="menuitem" data-mina-dropdown-item data-value="photos">写真</button>
-              <button class="mina-dropdown__item" type="button" role="menuitem" data-mina-dropdown-item data-value="settings">設定</button>
-            </div>
-          </div>
-        </div>
-        <p class="mina-caption">ドロップダウンは矢印キー・Home / End・Escape、モーダルはTab / Shift+Tab・Escapeに対応しています。</p>
-      </div>
-    </section>
+    <footer class="mina-caption mina-mt-8">
+      URL パラメータ: <code class="mina-mono">?source=photo|pattern|gradient&amp;quality=high|balanced|performance&amp;backend=liquid|native|static</code>
+    </footer>
   </main>
 
-  <section class="mina-modal" id="demo-modal" aria-hidden="true">
-    <div class="mina-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="demo-modal-title">
-      <header class="mina-modal__header">
-        <div>
-          <p class="mina-eyebrow">Accessible overlay</p>
-          <h2 class="mina-modal__title" id="demo-modal-title">Settings</h2>
-        </div>
-        <button class="mina-btn mina-btn--ghost mina-btn--icon" type="button" data-mina-close aria-label="閉じる">×</button>
-      </header>
-      <div class="mina-modal__body"><p class="mina-text-muted">Escape、Tab、Shift+Tabでモーダル内を操作できます。</p></div>
-      <footer class="mina-modal__footer"><button class="mina-btn mina-btn--primary" type="button" data-mina-close>Done</button></footer>
-    </div>
-  </section>
-
-  <script src="../minaui.js" defer></script>
   <script src="../minaui.glass.js" defer></script>
   <script>
     window.addEventListener('DOMContentLoaded', function () {
-      var status = document.getElementById('glass-status');
+      if (!window.MinaLiquid) return;
 
-      function report(glass, quality) {
+      var params = new URLSearchParams(location.search);
+      var status = document.getElementById('lab-status');
+      var MinaLiquidCtor = window.MinaLiquid;
+
+      var PATTERN = (function () {
+        var canvas = document.createElement('canvas');
+        canvas.width = 1024; canvas.height = 1024;
+        var ctx = canvas.getContext('2d');
+        var bands = ['#0b0716', '#ec4899', '#f4f0ff', '#8b5cf6', '#0b0716', '#22d3ee', '#f4f0ff', '#ec4899'];
+        for (var i = 0; i < bands.length; i++) { ctx.fillStyle = bands[i]; ctx.fillRect(0, i * 128, 1024, 128); }
+        ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 2;
+        for (var x = 0; x <= 1024; x += 64) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 1024); ctx.stroke(); }
+        for (var y = 0; y <= 1024; y += 64) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(1024, y); ctx.stroke(); }
+        ctx.fillStyle = '#0b0716';
+        ctx.font = 'bold 120px sans-serif';
+        ctx.fillText('LIQUID', 60, 240);
+        ctx.fillText('GLASS', 60, 380);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 90px sans-serif';
+        ctx.fillText('abc 123 XyZ', 60, 560);
+        ctx.beginPath(); ctx.arc(760, 700, 150, 0, Math.PI * 2); ctx.fillStyle = '#fbbf24'; ctx.fill();
+        ctx.beginPath(); ctx.arc(300, 850, 90, 0, Math.PI * 2); ctx.fillStyle = '#34d399'; ctx.fill();
+        return canvas;
+      })();
+
+      var SOURCES = {
+        photo: { type: 'image', src: 'assets/vrc-background.jpg' },
+        pattern: { type: 'canvas', el: PATTERN },
+        gradient: { type: 'gradient', stops: [[0, '#0b0716'], [0.35, '#ec4899'], [0.7, '#8b5cf6'], [1, '#22d3ee']], angle: 135 }
+      };
+
+      var BACKENDS = { liquid: 'webgl', native: 'native', static: 'static' };
+
+      var current = {
+        source: params.get('source') || 'photo',
+        quality: params.get('quality') || 'high',
+        backend: params.get('backend') || 'liquid'
+      };
+      if (!SOURCES[current.source]) current.source = 'photo';
+
+      function rebuild() {
+        if (window.labLiquid) window.labLiquid.destroy();
+        window.labLiquid = new MinaLiquidCtor({
+          source: SOURCES[current.source],
+          quality: current.quality,
+          backend: BACKENDS[current.backend],
+          glass: {
+            refraction: parseFloat(document.querySelector('[data-lab-param="refraction"]').value),
+            blur: parseFloat(document.querySelector('[data-lab-param="blur"]').value),
+            dispersion: parseFloat(document.querySelector('[data-lab-param="dispersion"]').value),
+            fresnel: parseFloat(document.querySelector('[data-lab-param="fresnel"]').value)
+          }
+        });
+        report();
+      }
+
+      function report() {
         if (!status) return;
-        status.textContent = 'backend: ' + glass.backend + ' / quality: ' + quality;
+        var s = window.labLiquid ? window.labLiquid.getStats() : {};
+        status.textContent = 'backend: ' + (s.state || '—')
+          + ' / quality: ' + current.quality
+          + ' / source: ' + current.source
+          + ' / elements: ' + (s.elements || 0)
+          + ' / drawScale: ' + (s.scale ? s.scale.toFixed(2) : '—')
+          + ' / draws: ' + (s.draws || 0);
       }
 
-      function rebuildGlass(options) {
-        if (window.demoMinaGlass) window.demoMinaGlass.destroy();
-        var quality = options.quality || 'high';
-        // balanced / performance はCSS側のモード属性と合わせ、
-        // JSシェーダーとCSS表現が同じ段階を指すようにする
-        if (quality === 'high') document.documentElement.removeAttribute('data-mina-performance');
-        else document.documentElement.setAttribute('data-mina-performance', quality);
-        window.demoMinaGlass = window.MinaGlass.autoInit(Object.assign({
-          background: 'assets/vrc-background.jpg',
-          maxCards: 2,
-          saturate: 1.5,
-          whiteLevel: 0
-        }, options));
-        report(window.demoMinaGlass, quality);
-      }
-
-      if (!window.MinaGlass) return;
-      window.demoRebuildGlass = rebuildGlass;
-      rebuildGlass({ quality: 'high' });
-
-      document.querySelectorAll('[data-demo-quality]').forEach(function (btn) {
+      document.querySelectorAll('[data-lab-source]').forEach(function (btn) {
+        btn.addEventListener('click', function () { current.source = btn.getAttribute('data-lab-source'); rebuild(); });
+      });
+      document.querySelectorAll('[data-lab-quality]').forEach(function (btn) {
         btn.addEventListener('click', function () {
-          rebuildGlass({ quality: btn.getAttribute('data-demo-quality') });
+          current.quality = btn.getAttribute('data-lab-quality');
+          if (window.labLiquid) window.labLiquid.setQuality(current.quality);
+          report();
         });
       });
-      document.querySelectorAll('[data-demo-backend]').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-          rebuildGlass({ quality: 'high', backend: btn.getAttribute('data-demo-backend') });
+      document.querySelectorAll('[data-lab-backend]').forEach(function (btn) {
+        btn.addEventListener('click', function () { current.backend = btn.getAttribute('data-lab-backend'); rebuild(); });
+      });
+      document.querySelectorAll('[data-lab-param]').forEach(function (input) {
+        input.addEventListener('input', function () {
+          input.nextElementSibling.textContent = input.value;
+          if (window.labLiquid) {
+            var p = {}; p[input.getAttribute('data-lab-param')] = parseFloat(input.value);
+            window.labLiquid.setGlass(p);
+          }
         });
       });
+
+      rebuild();
+      window.addEventListener('scroll', function () { setTimeout(report, 60); }, { passive: true });
+      setInterval(report, 1000);
     });
   </script>
 </body>
