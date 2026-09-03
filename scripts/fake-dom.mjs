@@ -219,7 +219,7 @@ export function createDocument() {
   doc.querySelector = (selector) => doc.querySelectorAll(selector)[0] || null;
   doc.getElementById = (id) => doc.querySelectorAll("#" + id)[0] || null;
   doc.createElement = (tag) => {
-    const el = new FakeElement(tag);
+    const el = String(tag).toLowerCase() === "video" ? new FakeVideoElement() : new FakeElement(tag);
     el._doc = doc;
     return el;
   };
@@ -228,4 +228,53 @@ export function createDocument() {
 
 export class FakeCustomEvent extends FakeEvent {
   constructor(type, init = {}) { super(type); this.detail = init.detail; }
+}
+
+/** Fake <video>: enough of the HTMLMediaElement surface for MinaLiquid
+ * lifecycle tests (event dispatch + play/pause state + frame callbacks). */
+export class FakeVideoElement extends FakeElement {
+  constructor(attrs = {}) {
+    super("video", attrs);
+    this.muted = false;
+    this.loop = false;
+    this.playsInline = false;
+    this.paused = true;
+    this.ended = false;
+    this.readyState = 0;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.currentTime = 0;
+    this._src = "";
+    this._vrafHandlers = [];
+    this._vrafSeq = 0;
+  }
+  set src(value) { this._src = String(value); }
+  get src() { return this._src; }
+  load() { /* no-op in the fake */ }
+  play() {
+    this.paused = false;
+    return Promise.resolve();
+  }
+  pause() { this.paused = true; }
+  requestVideoFrameCallback(handler) {
+    const id = ++this._vrafSeq;
+    this._vrafHandlers.push({ id, handler, cancelled: false });
+    return id;
+  }
+  cancelVideoFrameCallback(id) {
+    const entry = this._vrafHandlers.find((h) => h.id === id);
+    if (entry) entry.cancelled = true;
+  }
+  /** Test helper: fire one pending video frame (like a new decoded frame). */
+  fireVideoFrame() {
+    const pending = this._vrafHandlers.filter((h) => !h.cancelled && !h.fired);
+    for (const entry of pending) {
+      entry.fired = true;
+      entry.handler({ mediaTime: this.currentTime });
+    }
+    return pending.length;
+  }
+  get pendingVideoFrameCount() {
+    return this._vrafHandlers.filter((h) => !h.cancelled && !h.fired).length;
+  }
 }

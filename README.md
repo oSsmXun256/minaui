@@ -185,11 +185,12 @@ v0.3.0 から Liquid Glass は **MinaLiquid V3** — 描画原理から再設計
 const liquid = new MinaLiquid({
   source: { type: "image", src: "/background.jpg" },
   quality: "balanced",   // high | balanced | performance
+  maxRefractionPx: 40,   // 屈折変位の安全上限 (design px)
   glass: {
-    refraction: 0.22,    // 縁の屈折
-    blur: 12,            // 透過blur
-    dispersion: 0.045,   // 極小のRGB分散
-    fresnel: 0.22        // 縁のリムライト
+    refraction: 0.16,    // 縁の屈折
+    blur: 10,            // 透過blur
+    dispersion: 0.03,    // 極小のRGB分散
+    fresnel: 0.16        // 縁のリムライト
   }
 });
 ```
@@ -206,10 +207,14 @@ DOM 側は geometry を渡すだけです:
 ### 動作の要点
 
 - **中央はフラット**: 屈折・Fresnel・blur増加はエッジ近傍だけ。中央は背景をほぼそのまま透す
+- **屈折の安全上限**: 変位は `maxRefractionPx` (既定40px) でスムーズに制限。どのカードサイズでも極端な伸びは起きない
+- **scene readiness**: Scene が GPU に upload され最初の1フレームが描けるまで `.mina-liquid-gl` は付与されない。それまでは CSS 表面で表示
+- **source failure**: 画像ロード失敗 / CORS / tainted canvas / invalid canvas / 動画未準備でも透明・黒にならず CSS 表面へ fallback
+- **video lifecycle**: `requestVideoFrameCallback` 優先 (未対応環境のみRAF fallback・再生中のみ)。`destroy()` は内部生成 `<video>` だけ解放
 - **blur pyramid**: Scene から 1/2, 1/4, 1/8 のぼかしレベルを事前生成。ピクセルごとの多段 tap はしない
 - **dirty rendering**: 常時RAFなし。scroll / resize / 要素変化時のみ1フレームにまとめて描画
 - **要素カリング**: viewport 外・`display:none`・0サイズの要素は処理しない。表示中の要素だけを uniform に渡す
-- **fallback**: WebGL2なし / Safari・iOS / context lost / shader失敗のすべてで `CSS Frosted → Static` へ自動退化。コンテンツは消えない
+- **fallback**: WebGL2なし / Safari・iOS / context lost / shader・FBO失敗のすべてで `CSS Frosted → Static` へ自動退化。コンテンツは消えない
 
 ### Fallback / Backend
 
@@ -219,7 +224,7 @@ DOM 側は geometry を渡すだけです:
 | `native` | 要素ごとのCSS backdrop-filter（`mina-liquid-native`） | Safari / iOS / WebGL2未対応 |
 | `static` | blurなしの半透明面（`mina-liquid-static`） | native blur非対応の最終フォールバック |
 
-WebGL Context Lost時は自動でnativeへ切り替え、復元時に再構築します。
+WebGL Context Lost時は自動でnativeへ切り替え、復元時は Scene が再 upload されて最初のフレームが成功するまで GL に戻りません。
 
 ### Quality
 
@@ -256,6 +261,12 @@ npm run build
 `npm run build` は `dist/minaui.css`、`dist/minaui.js`、`dist/minaui.glass.js`、`dist/minaui-aqua-compat.css`、`dist/legacy/minaui.glass.v2.js` を生成します。リポジトリ内の直接参照にはルートのファイル、配布には `dist/` を使えます。
 
 WebGL Liquid Glass の設計詳細・制約・移行対応表は `LIQUID-GLASS.md`、旧Aqua互換の全対応は `AQUA-MIGRATION.md` にまとめています。
+
+視覚回帰検証 (Chromium headless + readPixels による実変位測定) はローカルサーバー (`python -m http.server 4173`) を起動した上で:
+
+```bash
+node scripts/visual-validate.mjs
+```
 
 `guide.md` にコンポーネント別の記述例、テーマ設計、アクセシビリティの注意点をまとめています。
 

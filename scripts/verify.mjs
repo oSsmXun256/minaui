@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Script, createContext } from "node:vm";
-import { createDocument, FakeCustomEvent, FakeElement, FakeEvent } from "./fake-dom.mjs";
+import { createDocument, FakeCustomEvent, FakeElement, FakeEvent, FakeVideoElement } from "./fake-dom.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cssPath = resolve(root, "minaui.css");
@@ -187,8 +187,9 @@ function bootMinaUI(doc) {
 
 /** Minimal WebGL2 stub: records the call graph so pipeline behavior can be
  * asserted without a GPU. Program link always succeeds unless failPrograms
- * lists a program key (via naming in the fragment source). */
-function createFakeGL() {
+ * lists a program key (via naming in the fragment source). Allocation
+ * failures can be simulated with failTextures / failFramebuffers counters. */
+function createFakeGL({ failProgramKeys = [], failTextures = 0, failFramebuffers = 0, uploadError = 0 } = {}) {
   const calls = [];
   const textures = [];
   const framebuffers = [];
@@ -196,6 +197,7 @@ function createFakeGL() {
   let texCounter = 0;
   let fboCounter = 0;
   let programCounter = 0;
+  let programFailIndex = 0;
   const gl = {
     // mutable pixel-store state (texParameteri target guards rely on this)
     _pixelStore: {},
@@ -206,16 +208,22 @@ function createFakeGL() {
     TRIANGLE_STRIP: 0x0005, FLOAT: 0x1406, TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800,
     LINEAR: 0x2601, LINEAR_MIPMAP_LINEAR: 0x2703, CLAMP_TO_EDGE: 0x812F,
     TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803, UNPACK_FLIP_Y_WEBGL: 0x9240,
-    ACTIVE_UNIFORMS: 0x8B86,
+    ACTIVE_UNIFORMS: 0x8B86, FRAMEBUFFER_COMPLETE: 0x8CD5, NO_ERROR: 0,
     // call log
     calls,
     drawCounts: () => calls.filter((c) => c[0] === "drawArrays").length,
     // object factories
-    createTexture() { const t = { id: ++texCounter, params: {}, mipmaps: 0 }; textures.push(t); return t; },
+    createTexture() {
+      if (failTextures > 0) { failTextures--; return null; }
+      const t = { id: ++texCounter, params: {}, mipmaps: 0 }; textures.push(t); return t;
+    },
     deleteTexture(t) { calls.push(["deleteTexture", t && t.id]); },
-    createFramebuffer() { const f = { id: ++fboCounter }; framebuffers.push(f); return f; },
+    createFramebuffer() {
+      if (failFramebuffers > 0) { failFramebuffers--; return null; }
+      const f = { id: ++fboCounter, complete: true }; framebuffers.push(f); return f;
+    },
     deleteFramebuffer(f) { calls.push(["deleteFramebuffer", f && f.id]); },
-    createProgram() { const p = { id: ++programCounter, uniforms: { uScene: "uScene", uB0: "uB0", uB1: "uB1", uB2: "uB2", uTex: "uTex", uDir: "uDir", uImgRes: "uImgRes", uOutRes: "uOutRes", uResolution: "uResolution", uCount: "uCount", uRect: "uRect", uShape: "uShape", uHasScene: "uHasScene" }, uniformValues: {} }; programs.push(p); return p; },
+    createProgram() { const p = { id: ++programCounter, uniforms: { uScene: "uScene", uB0: "uB0", uB1: "uB1", uB2: "uB2", uTex: "uTex", uDir: "uDir", uImgRes: "uImgRes", uOutRes: "uOutRes", uResolution: "uResolution", uCount: "uCount", uRect: "uRect", uShape: "uShape", uHasScene: "uHasScene", uMaxDispPx: "uMaxDispPx" }, uniformValues: {} }; programs.push(p); return p; },
     deleteProgram(p) { calls.push(["deleteProgram", p && p.id]); },
     createShader() { return {}; },
     deleteShader() {},
@@ -224,15 +232,23 @@ function createFakeGL() {
     createVertexArray() { return {}; },
     deleteVertexArray(v) { calls.push(["deleteVertexArray", !!v]); },
     // program lifecycle
-    shaderSource() {},
+    shaderSource(shader, source) { shader._source = source; },
     compileShader() {},
-    attachShader() {},
-    linkProgram() {},
+    attachShader(program, shader) {
+      program._sources = program._sources || [];
+      program._sources.push(String(shader._source || ""));
+    },
     bindAttribLocation() {},
+    linkProgram() {},
     getShaderParameter() { return true; },
     getShaderInfoLog() { return ""; },
     getProgramParameter(program, pname) {
-      if (pname === gl.LINK_STATUS) return true;
+      if (pname === gl.LINK_STATUS) {
+        // Simulated per-program failure: failProgramKeys matches a marker
+        // string embedded in one of the attached shader sources.
+        const srcs = program._sources || [];
+        return !failProgramKeys.some((key) => srcs.some((s) => s.includes(key)));
+      }
       if (pname === gl.ACTIVE_UNIFORMS) return Object.keys(program.uniforms).length;
       return true;
     },
@@ -247,12 +263,22 @@ function createFakeGL() {
     bindTexture(target, t) { gl._boundTexture = t; calls.push(["bindTexture", t && t.id]); },
     activeTexture(u) { calls.push(["activeTexture", u]); },
     pixelStorei(pname, value) { gl._pixelStore[pname] = value; },
-    texImage2D() {},
+    texImage2D(...args) {
+      // Only element uploads fail (tainted canvas sim); FBO texture
+      // allocations (source === null) must keep working.
+      const src = args[args.length - 1];
+      if (uploadError > 0 && src !== null && src !== undefined) {
+        if (uploadError !== Infinity) uploadError--;
+        throw new Error("SECURITY_ERR: tainted canvas");
+      }
+    },
     generateMipmap(target) { if (gl._boundTexture) gl._boundTexture.mipmaps++; calls.push(["generateMipmap"]); },
     texParameteri(t, name, value) { if (t && typeof t === "object") t.params[name] = value; },
     bindFramebuffer(target, fbo) { calls.push(["bindFramebuffer", fbo ? fbo.id : null]); },
     framebufferTexture2D() {},
+    checkFramebufferStatus() { return gl.FRAMEBUFFER_COMPLETE; },
     viewport(x, y, w, h) { calls.push(["viewport", w, h]); },
+    getError() { return gl.NO_ERROR; },
     uniform1i(location, value) { if (location) calls.push(["uniform1i", location, value]); },
     uniform1f(location, value) { if (location) calls.push(["uniform1f", location, value]); },
     uniform2f(location, a, b) { if (location) calls.push(["uniform2f", location, a, b]); },
@@ -266,9 +292,10 @@ function createFakeGL() {
     drawArrays(mode, first, count) { calls.push(["drawArrays", count]); },
     isContextLost() { return false; },
     _boundTexture: null,
+    _setProgramMarker(p, marker) { p._marker = marker; },
     canvas: null
   };
-  return { gl, calls, textures, framebuffers, programs };
+  return { gl, calls, textures, framebuffers, programs, options: { failProgramKeys } };
 }
 
 function loadGlass(env = {}) {
@@ -288,7 +315,7 @@ function loadGlass(env = {}) {
 }
 
 /** Build a DOM with n liquid elements and a fake WebGL2 environment. */
-function buildGlassEnvironment({ liquidCount = 1, hiddenCount = 0, viewport = { w: 1280, h: 800 } } = {}) {
+function buildGlassEnvironment({ liquidCount = 1, hiddenCount = 0, viewport = { w: 1280, h: 800 }, glOptions = {} } = {}) {
   const doc = createDocument();
   const els = [];
   for (let i = 0; i < liquidCount; i++) {
@@ -308,7 +335,7 @@ function buildGlassEnvironment({ liquidCount = 1, hiddenCount = 0, viewport = { 
     doc.body.appendChild(el);
     el.offsetParent = null; // display:none simulation (after appendChild, which marks visible)
   }
-  const fakeGL = createFakeGL();
+  const fakeGL = createFakeGL(glOptions);
 
   const rafQueue = [];
   const env = {
@@ -339,6 +366,54 @@ function drainRaf(rafQueue, times = 3) {
     const queued = rafQueue.splice(0);
     for (const fn of queued) fn();
   }
+}
+
+/** Boot a MinaLiquid instance in a sandbox with a fake GL context and a
+ * stubbed <canvas id="mina-glcanvas"> (matches testWebGLPipelineAndCleanup). */
+function bootGlassWithGL(build, overrides = {}) {
+  const { doc, els, fakeGL, env, rafQueue } = build;
+  const canvasListeners = {};
+  const glCanvas = {
+    style: {}, width: 0, height: 0,
+    addEventListener(type, fn) { (canvasListeners[type] = canvasListeners[type] || []).push(fn); },
+    removeEventListener(type, fn) {
+      const list = canvasListeners[type] || [];
+      const idx = list.indexOf(fn);
+      if (idx !== -1) list.splice(idx, 1);
+    },
+    dispatchEvent(event) {
+      if (!event.target) event.target = this;
+      for (const fn of [...(canvasListeners[event.type] || [])]) fn.call(this, event);
+      return true;
+    },
+    getContext: (kind) => (kind === "webgl2" ? fakeGL.gl : null)
+  };
+  const originalGetById = doc.getElementById.bind(doc);
+  doc.getElementById = (id) => (id === "mina-glcanvas" ? glCanvas : originalGetById(id));
+  const originalCreateElement = doc.createElement.bind(doc);
+  const fake2d = {
+    createLinearGradient: () => ({ addColorStop() {} }),
+    fillRect() {}, drawImage() {}, fillStyle: null
+  };
+  doc.createElement = (tag) => {
+    if (tag === "canvas") return { width: 0, height: 0, getContext: (kind) => (kind === "2d" ? fake2d : null) };
+    return originalCreateElement(tag);
+  };
+  Object.assign(env, {
+    WebGL2RenderingContext: function WebGL2RenderingContext() {},
+    requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length; }
+  }, overrides);
+  if (typeof env.addEventListener !== "function") {
+    env.addEventListener = () => {};
+    env.removeEventListener = () => {};
+  }
+  const sandbox = { console: { warn() {}, error() {}, info() {} }, module: { exports: {} }, setTimeout, clearTimeout, ...env };
+  const context = createContext(sandbox);
+  new Script(glass, { filename: glassPath }).runInContext(context);
+  return {
+    doc, els, fakeGL, glCanvas, rafQueue, env,
+    MinaLiquid: sandbox.module.exports.MinaLiquid
+  };
 }
 
 async function testQualityNormalization() {
@@ -466,34 +541,18 @@ async function testZeroLiquidElements() {
 }
 
 async function testWebGLPipelineAndCleanup() {
-  const { doc, els, fakeGL, rafQueue } = buildGlassEnvironment({ liquidCount: 2, hiddenCount: 1 });
-  const glCanvas = { style: {}, width: 0, height: 0, addEventListener() {}, removeEventListener() {}, getContext: (kind) => (kind === "webgl2" ? fakeGL.gl : null) };
-  const originalGetById = doc.getElementById.bind(doc);
-  doc.getElementById = (id) => (id === "mina-glcanvas" ? glCanvas : originalGetById(id));
-  const originalCreateElement = doc.createElement.bind(doc);
-  const fake2d = {
-    createLinearGradient: () => ({ addColorStop() {} }),
-    fillRect() {},
-    drawImage() {},
-    fillStyle: null
-  };
-  doc.createElement = (tag) => {
-    if (tag === "canvas") return { width: 0, height: 0, getContext: (kind) => (kind === "2d" ? fake2d : null) };
-    return originalCreateElement(tag);
-  };
-  const env = baseEnv(doc, {
-    WebGL2RenderingContext: function WebGL2RenderingContext() {},
-    requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length; }
-  });
-  const sandbox = { console: { warn() {}, error() {} }, module: { exports: {} }, setTimeout, clearTimeout, ...env };
-  const context = createContext(sandbox);
-  new Script(glass, { filename: glassPath }).runInContext(context);
-  const MinaLiquid = sandbox.module.exports.MinaLiquid;
+  const build = buildGlassEnvironment({ liquidCount: 2, hiddenCount: 1 });
+  const { els, fakeGL, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const doc = build.doc;
 
   const liquid = new MinaLiquid({ backend: "webgl", source: { type: "gradient" } });
   assert(liquid.backend === "webgl", "explicit webgl backend must resolve when a context is available");
   assert(liquid.state === "ready", "state must be ready after GL init");
+  // Before the first scene frame, elements must NOT have the GL class
+  assert(els[0].classList.contains("mina-liquid-gl") === false,
+    "scene-ready gate: no GL class before the first composited frame");
   drainRaf(rafQueue, 4);
+  assert(liquid.getSceneState() === "ready", "scene state must be ready after a drawn frame");
 
   // hidden element must be culled
   assert(liquid.getElements().length === 2, "hidden liquid element must be culled from rendering");
@@ -504,8 +563,8 @@ async function testWebGLPipelineAndCleanup() {
   // scene chain: mipmap generation on the source texture (mip blur path)
   assert(fakeGL.textures[0].mipmaps > 0, "scene texture must have mipmaps generated");
 
-  // GL-active class applied to tracked elements
-  assert(els[0].classList.contains("mina-liquid-gl"), "WebGL backend must mark elements as GL-owned");
+  // GL-active class applied to tracked elements AFTER the scene frame
+  assert(els[0].classList.contains("mina-liquid-gl"), "WebGL backend must mark elements as GL-owned after scene ready");
 
   liquid.setGlass({ refraction: 0.3 });
   liquid.setQuality("performance");
@@ -521,6 +580,7 @@ async function testWebGLPipelineAndCleanup() {
   assert(cleanup.some((c) => c[0] === "deleteFramebuffer"), "destroy must delete framebuffers");
   assert(liquid.state === "destroyed", "destroy must set destroyed state");
   assert(els[0].classList.contains("mina-liquid-gl") === false, "GL class must be removed on destroy");
+  void doc;
 }
 
 async function testElementCulling() {
@@ -716,6 +776,327 @@ function withDoc(doc, ...els) {
   els.forEach((el) => { el._doc = doc; });
 }
 
+/* ===================== V3.1 regression tests ===================== */
+
+/** Scene source that never becomes ready: an Image whose load never fires. */
+async function testSceneReadyGate() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const images = [];
+  const env = build.env;
+  env.Image = function FakeImage() {
+    this.complete = false;
+    this.crossOrigin = null;
+    this.onload = null;
+    this.onerror = null;
+    this._src = '';
+    Object.defineProperty(this, 'src', {
+      get() { return this._src; },
+      set(v) { this._src = String(v); }
+    });
+    images.push(this);
+  };
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'image', src: 'bad.jpg' } });
+  drainRaf(rafQueue, 2);
+  assert(images.length === 1, 'one Image must be created for the source');
+  assert(liquid.getSceneState() === 'loading', 'image source starts in loading state');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class while the image is loading');
+
+  // fire the error handler (image load failure)
+  images[0].onerror && images[0].onerror();
+  drainRaf(rafQueue, 2);
+  assert(liquid.getSceneState() === 'failed', 'image load error must mark scene failed');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class after image failure');
+  assert(els[0].classList.contains('mina-liquid-static') === true || els[0].classList.contains('mina-liquid-native') === true,
+    'failed scene must keep a visible CSS surface');
+  liquid.destroy();
+}
+
+/** Texture upload failure (tainted canvas) must fail the scene, not show GL. */
+async function testTextureUploadFailure() {
+  const build = buildGlassEnvironment({ liquidCount: 1, glOptions: { uploadError: Infinity } });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' } });
+  drainRaf(rafQueue, 4);
+  assert(liquid.getSceneState() === 'failed', 'upload error must fail the scene');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'upload failure must not enable GL pixels');
+  assert(els[0].classList.contains('mina-liquid-static') === true || els[0].classList.contains('mina-liquid-native') === true,
+    'upload failure must keep the CSS surface');
+  liquid.destroy();
+}
+
+/** Each of scene/blur/composite program failures must fall back. */
+async function testProgramFailures() {
+  const cases = [
+    ['uOutRes', 'scene'],
+    ['uDir', 'blur'],
+    ['uMaxDispPx', 'composite']
+  ];
+  for (const [marker, name] of cases) {
+    const build = buildGlassEnvironment({ liquidCount: 1, glOptions: { failProgramKeys: [marker] } });
+    const { els, MinaLiquid } = bootGlassWithGL(build);
+    const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' } });
+    assert(liquid.backend === 'native' || liquid.backend === 'static',
+      `${name} program failure must fall back to CSS surface, got ${liquid.backend}`);
+    assert(liquid.state !== 'ready', `${name} program failure must not report ready`);
+    assert(liquid.getContext() === null || Object.keys(liquid._programs).length === 0,
+      `${name} program failure must not leave half-initialized GL programs`);
+    assert(els[0].classList.contains('mina-liquid-gl') === false,
+      `${name} program failure must not enable GL pixels`);
+    liquid.destroy();
+  }
+}
+
+/** Framebuffer allocation failure must fall back and release resources. */
+async function testFramebufferFailure() {
+  const build = buildGlassEnvironment({ liquidCount: 1, glOptions: { failFramebuffers: 1 } });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' } });
+  assert(liquid.backend === 'native' || liquid.backend === 'static',
+    'framebuffer failure must fall back to CSS surface');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'framebuffer failure must not enable GL pixels');
+  drainRaf(rafQueue, 2);
+  liquid.destroy();
+}
+
+/** Scene-ready gate: GL class only after the first composited scene frame. */
+async function testSceneReadyClassGate() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const liquid = new MinaLiquid({ backend: 'webgl' });
+  assert(liquid.getSceneState() === 'none', 'no source means scene state none');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class without a scene');
+  drainRaf(rafQueue, 2);
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'still no GL class after frames without a scene');
+  assert(liquid.getSceneState() === 'none', 'scene state stays none without a source');
+
+  liquid.setSource({ type: 'gradient' });
+  drainRaf(rafQueue, 2);
+  assert(liquid.getSceneState() === 'ready', 'gradient scene must become ready');
+  assert(els[0].classList.contains('mina-liquid-gl') === true, 'GL class only after the scene frame');
+  liquid.destroy();
+}
+
+/** requestVideoFrameCallback drives scene updates; RAF fallback otherwise. */
+async function testVideoFrameCallbackLifecycle() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+
+  // Late-metadata video: dimensions arrive only after loadedmetadata
+  const video = new FakeVideoElement();
+  video.videoWidth = 0; video.videoHeight = 0;
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: video } });
+  assert(liquid.getSceneState() === 'loading', 'video starts in loading state');
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'loading', 'still loading before loadeddata (videoWidth=0 uploads nothing)');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class while video is loading');
+
+  // metadata arrives late
+  video.videoWidth = 1280; video.videoHeight = 720;
+  video.dispatchEvent(new FakeEvent('loadedmetadata'));
+  video.dispatchEvent(new FakeEvent('loadeddata'));
+  video.dispatchEvent(new FakeEvent('canplay'));
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'ready', 'late video metadata must promote the scene');
+
+  // play -> rVFC drives renders, no continuous RAF requeue
+  video.play();
+  video.dispatchEvent(new FakeEvent('playing'));
+  drainRaf(rafQueue, 2);
+  assert(video.pendingVideoFrameCount > 0, 'playing must register a rVFC tick');
+  const drawsBefore = liquid.getStats().draws;
+  video.fireVideoFrame();
+  drainRaf(rafQueue, 3);
+  assert(liquid.getStats().draws > drawsBefore, 'a new video frame must trigger a render');
+
+  // pause/seeked/ended must render but not schedule more frames
+  video.dispatchEvent(new FakeEvent('pause'));
+  drainRaf(rafQueue, 2);
+  video.dispatchEvent(new FakeEvent('seeked'));
+  drainRaf(rafQueue, 2);
+  video.dispatchEvent(new FakeEvent('ended'));
+  drainRaf(rafQueue, 2);
+  assert(video.pendingVideoFrameCount === 0, 'no pending rVFC while paused/ended');
+  liquid.destroy();
+}
+
+/** Internally created <video> is released on destroy; user video is not. */
+async function testVideoDestroyCleanup() {
+  // internal video
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue, MinaLiquid, doc } = bootGlassWithGL(build);
+  const created = [];
+  const origCreate = doc.createElement.bind(doc);
+  doc.createElement = (tag) => {
+    const el = origCreate(tag);
+    if (tag === 'video') created.push(el);
+    return el;
+  };
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', src: '/bg.mp4' } });
+  assert(created.length === 1, 'video source must create one <video>');
+  const internalVideo = created[0];
+  drainRaf(rafQueue, 2);
+  liquid.destroy();
+  assert(internalVideo.paused === true, 'destroy must pause an internally created video');
+  assert(internalVideo._src === '' || internalVideo.getAttribute('src') === null,
+    'destroy must detach the internal video source');
+
+  // user video: untouched
+  const build2 = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue: raf2, MinaLiquid: ML2 } = bootGlassWithGL(build2);
+  const userVideo = new FakeVideoElement();
+  userVideo._src = '/user.mp4';
+  userVideo.play();
+  const liquid2 = new ML2({ backend: 'webgl', source: { type: 'video', el: userVideo } });
+  drainRaf(raf2, 2);
+  liquid2.destroy();
+  assert(userVideo.paused === false, 'destroy must not pause a user-provided video');
+  assert(userVideo._src === '/user.mp4', 'destroy must not detach a user-provided video source');
+}
+
+/** The RAF fallback path is used only when rVFC is unsupported. */
+async function testVideoRafFallback() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue, MinaLiquid, env } = bootGlassWithGL(build);
+  const video = new FakeVideoElement();
+  // strip rVFC support
+  delete video.requestVideoFrameCallback;
+  delete video.cancelVideoFrameCallback;
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: video } });
+  video.videoWidth = 1280; video.videoHeight = 720;
+  video.dispatchEvent(new FakeEvent('loadeddata'));
+  drainRaf(rafQueue, 3);
+  video.dispatchEvent(new FakeEvent('playing'));
+  // rafTick must have been scheduled by the fallback path
+  const scheduled = rafQueue.length;
+  assert(scheduled > 0, 'RAF fallback must schedule while playing without rVFC');
+  // cancelAnimationFrame stub: simulate stopping
+  video.dispatchEvent(new FakeEvent('pause'));
+  liquid.destroy();
+  void env;
+}
+
+/** Downscales >2048px sources through a reusable canvas (no per-frame alloc). */
+async function testReusableDownscaleCanvas() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { doc, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const canvases = [];
+  const origCreate = doc.createElement.bind(doc);
+  doc.createElement = (tag) => {
+    const el = origCreate(tag);
+    if (tag === 'canvas') canvases.push(el);
+    return el;
+  };
+  // FakeElement-based canvas with 2d context capture
+  const bigSource = {
+    width: 4096, height: 2048,
+    getContext: (kind) => (kind === '2d' ? { drawImage() {} } : null)
+  };
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'canvas', el: bigSource } });
+  drainRaf(rafQueue, 2);
+  // simulate many video-style frames: each frame re-uploads the same source
+  const createdBefore = canvases.length;
+  for (let i = 0; i < 5; i++) {
+    liquid._sceneDirty = true;
+    liquid._frame();
+  }
+  assert(canvases.length === createdBefore, 'repeated uploads must not allocate new canvases');
+  assert(liquid._downscaleCanvas !== null, 'a reusable downscale canvas must exist');
+  liquid.destroy();
+}
+
+/** maxRefractionPx caps displacement in uniform upload. */
+async function testMaxDisplacementCap() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, fakeGL, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  els[0].getBoundingClientRect = () => ({ left: 100, top: 80, width: 1200, height: 800, right: 1300, bottom: 880 });
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' }, maxRefractionPx: 24 });
+  drainRaf(rafQueue, 3);
+  const disp = fakeGL.calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uMaxDispPx');
+  assert(disp.length > 0, 'uMaxDispPx uniform must be uploaded');
+  assert(disp.every((c) => c[2] >= 0 && c[2] <= 24 * 4),
+    'uMaxDispPx must stay within the design-px cap scaled by drawScale');
+  assert(disp[disp.length - 1][2] === 24, 'default drawScale=1 means uMaxDispPx === maxRefractionPx');
+  liquid.setMaxRefractionPx(8);
+  drainRaf(rafQueue, 2);
+  const disp2 = fakeGL.calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uMaxDispPx');
+  assert(disp2[disp2.length - 1][2] === 8, 'setMaxRefractionPx must update the cap');
+  liquid.destroy();
+}
+
+/** context lost -> frosted, restore -> re-earn GL via a fresh scene frame. */
+async function testContextLostRestoreCycle() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, glCanvas, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' } });
+  drainRaf(rafQueue, 3);
+  assert(els[0].classList.contains('mina-liquid-gl'), 'precondition: GL class after scene ready');
+
+  // context lost
+  const lostEvent = new FakeEvent('webglcontextlost', { cancelable: true });
+  glCanvas.dispatchEvent(lostEvent);
+  assert(liquid.backend === 'native' || liquid.backend === 'static', 'context lost must switch backend');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'context lost must drop GL class');
+  assert(els[0].classList.contains('mina-liquid-native') === true || els[0].classList.contains('mina-liquid-static') === true,
+    'context lost must show the CSS fallback surface');
+
+  // restore: GL must NOT come back until the scene is re-earned
+  const gl = liquid.getContext();
+  gl.isContextLost = () => false;
+  glCanvas.dispatchEvent(new FakeEvent('webglcontextrestored'));
+  assert(liquid.backend === 'webgl', 'restore must rebuild the webgl backend');
+  assert(liquid.getSceneState() !== 'ready', 'restore must reset scene readiness');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class immediately after restore');
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'ready', 'restore + frames must re-earn the scene');
+  assert(els[0].classList.contains('mina-liquid-gl') === true, 'GL class returns only after the new scene frame');
+  liquid.destroy();
+}
+
+/** Refraction displacement profile (JS mirror of the shader math):
+ * center ~ 0, mid small, edge strongest, always capped by maxDispPx. */
+async function testDisplacementProfile() {
+  const { DEFAULT_GLASS } = loadGlass();
+  const maxDispPx = 40;
+  const edgeWidth = DEFAULT_GLASS.edgeWidth;
+  const refraction = DEFAULT_GLASS.refraction;
+
+  const displacement = (t, cardMinHalfPx, scale = 1) => {
+    // mirrors buildCompositeShaderSource: bevel slope + knee + px clamp
+    const w = Math.min(Math.max(edgeWidth * cardMinHalfPx, 8), 56);
+    const tc = Math.min(t, 0.98);
+    const denom = Math.sqrt(Math.max(1 - tc * tc, 0.04));
+    let slope = tc / denom;
+    const knee = Math.max(0, Math.min(1, (slope - 0.8) / 0.2));
+    const smoothKnee = knee * knee * (3 - 2 * knee);
+    slope = slope + (5 - slope) * smoothKnee * 0.85;
+    let d = slope * refraction * w * scale;
+    if (d > maxDispPx) d = maxDispPx;
+    return d;
+  };
+
+  // Profile on a 400x260 card (min half = 130)
+  const half = 130;
+  const center = displacement(0.0, half);
+  const quarter = displacement(0.25, half);
+  const mid = displacement(0.5, half);
+  const edge = displacement(1.0, half);
+  assert(center === 0, 'center displacement must be exactly 0');
+  assert(quarter < mid, 'displacement must grow monotonically (quarter < mid)');
+  assert(mid < edge, 'displacement must grow monotonically (mid < edge)');
+  assert(edge < mid * 10, 'edge/mid ratio must stay bounded (raw slope would diverge)');
+  assert(mid < 4, 'mid displacement must stay small (design px)');
+  assert(edge <= maxDispPx, 'edge displacement must respect the px cap');
+
+  // Any card size (tiny to huge) stays capped and positive
+  for (const minHalf of [10, 50, 130, 500, 2000]) {
+    const d = displacement(1.0, minHalf);
+    assert(d <= maxDispPx, `edge displacement must be capped for minHalf=${minHalf}`);
+    assert(d > 0, `edge displacement must stay positive for minHalf=${minHalf}`);
+  }
+}
+
 const tests = [
   ["Liquid quality normalization (V3 default balanced)", testQualityNormalization],
   ["Liquid quality pipeline shape (pyramid tiers)", testQualityPipelineShape],
@@ -729,7 +1110,20 @@ const tests = [
   ["Toast (XSS-safe + fade out)", testToast],
   ["Modal (focus trap / restore / scroll lock)", testModalFocusAndScrollLock],
   ["Dropdown (toggle / change / focus restore)", testDropdown],
-  ["Tabs (keyboard)", testTabs]
+  ["Tabs (keyboard)", testTabs],
+  // V3.1 regression suite
+  ["Scene ready gate: image load failure -> CSS surface", testSceneReadyGate],
+  ["Scene ready gate: texture upload failure -> CSS surface", testTextureUploadFailure],
+  ["Scene/Blur/Composite shader failure -> fallback", testProgramFailures],
+  ["Framebuffer allocation failure -> fallback", testFramebufferFailure],
+  ["Scene ready gate: GL class only after first scene frame", testSceneReadyClassGate],
+  ["Video lifecycle: late metadata + rVFC frames", testVideoFrameCallbackLifecycle],
+  ["Video destroy: internal released, user untouched", testVideoDestroyCleanup],
+  ["Video RAF fallback only without rVFC", testVideoRafFallback],
+  ["Reusable downscale canvas for >2048px sources", testReusableDownscaleCanvas],
+  ["maxRefractionPx displacement cap", testMaxDisplacementCap],
+  ["Displacement profile: center 0 < mid < edge, capped", testDisplacementProfile],
+  ["Context lost -> frosted -> restored re-earn", testContextLostRestoreCycle]
 ];
 
 let failed = 0;

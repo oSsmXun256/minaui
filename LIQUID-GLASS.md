@@ -35,6 +35,40 @@ MinaLiquid が参照できるのは、**レンダラ自身が管理する Scene*
 
 DOM を capture しているわけでは**ありません**。Liquid Glass の背後に置くのは、この Scene を描画した WebGL キャンバス(またはCSS側で同じ画像を敷いた背景)である必要があります。
 
+### Scene loading state と readiness
+
+Scene には明示的な状態があります (`getSceneState()` で取得可能):
+
+```text
+none     → setSource 前 (Scene なし)
+loading  → source 受理済み・まだGPUに反映されていない
+ready    → GPU upload 成功 + 最初の composite 描画が完了
+failed   → ロード失敗 / CORS / tainted canvas / invalid source
+```
+
+**`.mina-liquid-gl` (GL が要素のピクセルを所有する状態) は `ready` になるまで付与されません。**
+それ以前や `failed` の間、要素は CSS Frosted / Static Surface のままで、コンテンツ・背景が透明・黒・不可視になることはありません。
+
+### source failure fallback
+
+次のいずれでもページは壊れません (webgl backend 自体は維持し、要素は CSS 表面に戻します):
+
+- 画像の load error
+- CORS / tainted canvas (`texImage2D` が throw)
+- invalid canvas (幅・高さ 0)
+- texture upload 時の GL error
+- 動画の利用不能
+
+失敗後は `setSource()` で再度 source を渡せば再挑戦できます。
+
+### Video lifecycle
+
+- `loadedmetadata` / `loadeddata` / `canplay` / `playing` / `pause` / `seeked` / `ended` の各変化で必要な render が必ず走ります (metadata 遅延にも対応)
+- 対応ブラウザでは **`requestVideoFrameCallback()`** を優先し、**新しいフレームが来た時だけ** Scene を更新します
+- 未対応環境のみ RAF fallback (再生中のみ)。**常時無条件 RAF は禁止**という設計方針です
+- ユーザーが渡した `<video>` 要素は内部生成 video と同一の追跡を受けますが、`destroy()` で pause / src 解放されることは**ありません** (内部生成 video のみ解放します)
+- 2048px 超の video source は **reusable staging canvas** に一度だけ確保され、毎フレーム新規 canvas は生成されません
+
 ### 推奨用途
 
 - 写真・動画・グラデーション背景の上に浮かぶ **Hero / プロフィール / Showcase カード**
@@ -75,8 +109,9 @@ Pass 3: Composite       — 各要素の Rounded-rect SDF から
 
 - **SDF**: rounded box の符号付き距離場で要素を特定
 - **edge proximity**: `t = 0` (中央) → `t = 1` (縁) の正規化距離
-- **normal**: SDF の解析的勾配 × ベベル勾配 `t / sqrt(1 - t²)`
+- **normal**: SDF の解析的勾配 × ベベル勾配 `t / sqrt(1 - t²)` (smooth saturation)
 - **屈折**: `refractedUV = uv + normal.xy * refraction * edgeWidth` — **中央はほぼゼロ**
+- **safety limit**: 最終変位は `maxRefractionPx` (既定 40 design px) でスムーズに clamp
 
 つまり:
 
@@ -88,9 +123,34 @@ Pass 3: Composite       — 各要素の Rounded-rect SDF から
 
 カード中央を激しく歪ませないのが設計上の最重要ポイントです。人間がガラスと認識するのは縁の曲率と光の反射だからです。
 
+### Refraction safety (変位の上限)
+
+circular-cap bevel の傾き `t/sqrt(1-t²)` は `t → 1` で発散するため、そのまま使うとカードサイズ次第で背景が極端に伸びます。V3 は次の 2 段階の安全策を持ちます:
+
+1. **smooth saturation**: 傾きを soft-knee で滑らかに飽和させます (物理的な「中央 0 → 中間 小 → 縁 最強」の単調性は維持)
+2. **px cap**: 最終 sampling displacement を `maxRefractionPx` (design px) 以下に clamp。shader には `uMaxDispPx` (renderScale 付き) として渡されます
+
+```js
+new MinaLiquid({ ..., maxRefractionPx: 40 });   // 既定 40 (4..512 に clamp)
+liquid.setMaxRefractionPx(24);                 // 実行時変更も可能
+```
+
+**どんなカードサイズでも極端な UV ジャンプは起きません** (visual validation で実測検証)。
+
 ### Chromatic Aberration
 
-RGB dispersion は**エッジ近傍のみ**、屈折オフセットの数 % だけ R/B を逆方向にずらします。既定値 `dispersion: 0.045` はゲーミングエフェクトにならないよう意図的に極小です。`performance` 品質では無効、`balanced` では 60% 減衰します。
+RGB dispersion は**エッジ近傍のみ**、屈折オフセットの数 % だけ R/B を逆方向にずらします。既定値 `dispersion: 0.03` はゲーミングエフェクトにならないよう意図的に極小です。`performance` 品質では無効、`balanced` では 60% 減衰します。
+
+### 推奨既定値 (V3.1)
+
+| parameter | 既定 | 意図 |
+| :-- | :-- | :-- |
+| `refraction` | `0.16` | エッジで自然に見える範囲の弱屈折 |
+| `blur` | `10` | 背景を完全に消さない透過 blur |
+| `fresnel` | `0.16` | リムライトが白飛びしない強度 |
+| `specular` | `0.16` | ハイライトが白い玉にならない強度 |
+| `dispersion` | `0.03` | ほぼ知覚不可の色縁 |
+| `edgeWidth` | `0.16` | ベベル幅 (短辺比)。広すぎると中央まで屈折する |
 
 ---
 
@@ -110,7 +170,10 @@ RGB dispersion は**エッジ近傍のみ**、屈折オフセットの数 % だ�
 
 ```text
 WebGL2 (MinaLiquid)
-  ↓ WebGL2なし / Safari・iOS / タッチデバイス / context lost / shader失敗
+  ↓ WebGL2なし / Safari・iOS / タッチデバイス
+  ↓ Scene / Blur / Composite program のいずれかの失敗
+  ↓ framebuffer / texture 割り当て失敗
+  ↓ context lost
 CSS Frosted Glass (.mina-liquid-native, backdrop-filter)
   ↓ backdrop-filter 未対応
 Static Surface (.mina-liquid-static, 半透明のみ)
@@ -119,6 +182,26 @@ Static Surface (.mina-liquid-static, 半透明のみ)
 - `.mina-liquid` 要素は **JSなしでも可読な半透明面** として CSS で描画される
 - どの段階でもコンテンツは消えず、背景は黒にならず、レイアウトは壊れない
 - 要素には現在の backend を示す state class (`mina-liquid-gl` / `-native` / `-static`) が自動付与される
+
+### WebGL program / FBO failure handling
+
+初期化は all-or-nothing です。Scene program・Blur program・Composite program・framebuffer completeness・texture 割り当ての**すべて**を検証し、1 つでも失敗した場合:
+
+1. 中途半端に初期化された GL resource (program / texture / FBO / VAO / VBO) を即座に解放
+2. `WebGL → CSS Frosted → Static` へ安全に fallback
+3. 壊れた WebGL 状態で描画を継続しません
+
+### 状態遷移 (context lost / restored)
+
+```text
+loading   → ready             (GPU upload + 最初の composite 完了)
+loading   → failed → frosted  (source failure。要素は CSS 表面のまま)
+ready     → context-lost → frosted
+frosted   → context-restored → (scene 未準備のまま .mina-liquid-gl にはならない)
+          → 再 upload + 1 frame 描画後 → ready / GL class
+```
+
+復帰時も Scene が再び GPU に upload されて最初の frame が成功するまで、要素は CSS 表面のままです。
 
 ---
 
@@ -137,18 +220,19 @@ const liquid = new MinaLiquid({
   renderScale: 1,               // devicePixelRatio への係数
   maxPixelCount: 1920 * 1080,   // バックバッファ上限
   maxElements: 8,               // 同時追跡する liquid 要素数 (最大16)
+  maxRefractionPx: 40,          // 屈折変位の安全上限 (design px)
   glass: {
-    refraction: 0.22,           // 縁の屈折量 (edgeWidth の割合)
-    blur: 12,                   // 透過blur (design px → LOD)
-    fresnel: 0.22,              // 縁の Fresnel リムライト
-    specular: 0.22,             // 縁の指向性ハイライト
-    dispersion: 0.045,          // RGB分散 (ごく僅かに)
-    edgeBlur: 0.45,             // 縁に向かう blur 増加
-    edgeShadow: 0.24,           // 縁のコンタクトシャドウ
-    edgeWidth: 0.2,             // ベベル幅 (短辺比)
+    refraction: 0.16,           // 縁の屈折量 (edgeWidth の割合)
+    blur: 10,                   // 透過blur (design px → LOD)
+    fresnel: 0.16,              // 縁の Fresnel リムライト
+    specular: 0.16,              // 縁の指向性ハイライト
+    dispersion: 0.03,           // RGB分散 (ごく僅かに)
+    edgeBlur: 0.4,              // 縁に向かう blur 増加
+    edgeShadow: 0.22,           // 縁のコンタクトシャドウ
+    edgeWidth: 0.16,            // ベベル幅 (短辺比)
     tint: 0.05,
     tintColor: [1, 1, 1],
-    saturation: 1.08,
+    saturation: 1.06,
     brightness: 1.0
   }
 });
@@ -161,12 +245,14 @@ const liquid = new MinaLiquid({
 | `setSource(spec)` | Scene を差し替え (image / video / canvas / gradient) |
 | `setGlass(partial)` | glass パラメータを部分更新 |
 | `setQuality(q)` | quality を切替 (pipeline 再構築) |
+| `setMaxRefractionPx(v)` | 屈折変位の安全上限を実行時変更 (design px) |
 | `refresh()` | Scene と geometry を強制再描画 |
 | `requestRender()` | dirty rendering を1フレームにまとめて要求 |
-| `getStats()` | draws / lastDrawMs / elements / scale / state |
+| `getStats()` | draws / lastDrawMs / elements / scale / state / scene / maxDispPx |
+| `getSceneState()` | Scene 状態 (`none` / `loading` / `ready` / `failed`) |
 | `getElements()` | 現在追跡中の (可視) 要素 |
 | `getCanvas() / getContext()` | 生の canvas / GL コンテキスト |
-| `destroy()` | 全リソース解放 (listener / RAF / GL / canvas) |
+| `destroy()` | 全リソース解放 (listener / RAF / rVFC / video / GL / canvas) |
 
 静的ヘルパー: `MinaLiquid.isSupported()`, `MinaLiquid.detectBackend()`, `MinaLiquid.normalizeQuality()`, `MinaLiquid.describeElement(el)`
 
@@ -202,13 +288,14 @@ CSS カスタムプロパティとの連携: 角丸は通常 `border-radius` の
 ## 8. Performance 設計
 
 - **Continuous RAF 禁止**: 描画は dirty flag + 単一 RAF に coalesce。静止ページでは描画ゼロ
+- **Video は rVFC 駆動**: `requestVideoFrameCallback` 対応環境では動画の新しいフレームが来た時だけ Scene 更新。RAF fallback は未対応環境・再生中のみ
 - **scroll coalescing**: capture フェーズの scroll listener は dirty を立てるだけ。1フレームに1回の rect 読み取り
 - **resize coalescing**: `ResizeObserver` (document + 各 liquid 要素)。canvas サイズ変更時のみ FBO 再生成
 - **要素カリング**: `display:none` (`offsetParent`), `visibility:hidden`, 0サイズ, viewport 外 (+120px マージン) を毎フレーム除外。**表示されている要素だけ** uniform に渡す (「常に8個分処理」はしない)
 - **pixel budget**: `maxPixelCount` を超えると内部バッファを自動縮小 (DPR 3 上限)
-- **texture 上限**: source は 2048px に一度だけダウンスケール
+- **texture 上限**: source は 2048px に一度だけダウンスケール (**reusable staging canvas**、毎フレーム割り当てなし)
 - **visibility**: `document.hidden` で RAF を即キャンセル
-- **GPU cleanup**: `destroy()` / context lost で program / texture / FBO / VAO / VBO を全解放
+- **GPU cleanup**: `destroy()` / context lost で program / texture / FBO / VAO / VBO を全解放。rVFC / video listener / 内部生成 `<video>` も停止・解放
 - `will-change` / `translateZ(0)` の乱用はしません (昇格は `.mina-gpu` で明示的に)
 
 ---
@@ -233,16 +320,47 @@ CSS カスタムプロパティとの連携: 角丸は通常 `border-radius` の
 
 ---
 
-## 11. Troubleshooting
+## 11. Visual Validation
+
+`scripts/visual-validate.mjs` は Chrome headless で `scripts/visual-probe.html` を実行し、**色差ではなく実際の sampling displacement** を測定して数値検証します。
+
+### 方式 (A/B 比較)
+
+同じ Scene (coordinate-coded: 64px 周期の triangle wave + per-column noise) ・同じ glass geometry で:
+
+```text
+Baseline: refraction = 0, dispersion = 0, fresnel = 0, specular = 0
+Test:     通常の glass 設定
+```
+
+をそれぞれ描画し、readPixels + 正規化相互相関で **各行のサンプリング変位** を直接測定します。blur/tint/specular が混ざっても誤検証できません (Baseline と Test で同一だから)。
+
+### 検証項目
+
+- center displacement ≈ 0 / mid ≤ edge (rim 方向に単調)
+- maximum displacement ≤ safe limit (`maxRefractionPx` × renderScale)
+- white clipping (中央・エッジの白飛び率)
+- RGB dispersion 強度 (R と B の sampling shift 差)
+- background restoration after DOM move (移動後の旧領域が元の Scene に戻る)
+- multiple glass overlap (大・小・極小カードが同時に屈折)
+- source failure fallback (404 画像 → CSS 表面)
+- context lost → frosted → restored (再 earn まで GL class なし)
+- destroy (GL class 除去)
+
+実行には `python -m http.server 4173` 相当のローカルサーバーと Chrome が必要です。
+
+### Troubleshooting
 
 | 症状 | 原因と対処 |
 | :-- | :-- |
 | 背景が真っ黒 | Scene が未指定です。`source` を渡してください (WebGL は DOM を capture しません) |
+| ガラス面が半透明のまま | Scene がまだ `ready` になっていません (loading / failed)。`getSceneState()` で確認してください |
 | ガラスに何も見えない | liquid 要素が viewport 外 / display:none / 0サイズの可能性。`getStats().elements` で確認 |
-| 画像が出ない | CORS (`crossOrigin="anonymous"` 対応サーバー) を確認。 tainted canvas は upload に失敗し fallback します |
-| 歪みが強すぎる | `glass.refraction` を下げる、または要素に `data-mina-refraction="0.6"` |
+| 画像が出ない | CORS (`crossOrigin="anonymous"` 対応サーバー) を確認。 tainted canvas は upload に失敗し CSS 表面に fallback します |
+| 歪みが強すぎる | `glass.refraction` を下げる、`maxRefractionPx` を絞る、または要素に `data-mina-refraction="0.6"` |
 | 色ズレが気になる | `glass.dispersion: 0` |
 | performance モードでぼやけすぎ | mip-only の仕様です。`balanced` 以上で pyramid blur になります |
+| 動画が最初のフレームから動かない | autoplay が block されている可能性。ユーザー操作後に `video.play()` してください。metadata 遅延には対応済みです |
 
 ---
 

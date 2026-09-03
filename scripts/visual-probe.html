@@ -7,159 +7,342 @@
 </head>
 <body style="margin:0;">
 <pre id="probe-result">pending</pre>
-<canvas id="scene-src" width="1024" height="1024" style="display:none;"></canvas>
+<!-- Coordinate-coded scene: 64px-period triangle wave (unique within the
+     +/-24px search) + per-column noise so correlation locks the exact shift.
+     Displacement is measured by correlating the rendered row against the
+     baseline (refraction=0) row of the SAME geometry and blur. -->
+<canvas id="scene-src" width="1400" height="900" style="display:none;"></canvas>
 <div id="stage" style="position:relative;width:1400px;height:900px;">
-  <div id="glass" data-mina-liquid style="position:absolute;left:300px;top:250px;width:400px;height:260px;"></div>
+  <div id="glass" data-mina-liquid style="position:absolute;left:300px;top:250px;width:400px;height:260px;border-radius:24px;"></div>
+  <div id="glass-small" data-mina-liquid style="position:absolute;left:900px;top:520px;width:160px;height:120px;border-radius:18px;"></div>
+  <div id="glass-tiny" data-mina-liquid style="position:absolute;left:80px;top:600px;width:64px;height:48px;border-radius:12px;"></div>
 </div>
 <script>
 "use strict";
-function analyzeStage(stageCanvas, rect) {
-  const stageCtx = stageCanvas.getContext("2d");
-  const W = stageCanvas.width, H = stageCanvas.height;
-  const img = stageCtx.getImageData(0, 0, W, H).data;
-  const get = (x, y) => { const i = (y * W + x) * 4; return [img[i], img[i + 1], img[i + 2]]; };
 
-  // Scene has horizontal bands: background at (20, y) is the un-refracted row reference.
-  function rowDeviation(y, x0, x1) {
-    let sum = 0, n = 0;
-    for (let x = x0; x <= x1; x++) {
-      const a = get(x, y), b = get(20, y);
-      sum += Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+function hashColumn(x) {
+  let h = (x * 2654435761) >>> 0;
+  h ^= h >>> 13; h = (h * 1274126177) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967295;
+}
+function buildCodedScene(canvas) {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  for (let x = 0; x < W; x++) {
+    const tri = Math.abs(((x % 64) - 32)) / 32;        // 0..1, period 64
+    const v = Math.round(30 + tri * 170 + hashColumn(x) * 30);
+    const tint = Math.round(10 + hashColumn(x + 7777) * 30);
+    ctx.fillStyle = "rgb(" + v + ", " + (v - tint) + ", " + (v - 20 + tint) + ")";
+    ctx.fillRect(x, 0, 1, H);
+  }
+  return ctx;
+}
+
+function grabFrame(liquid, canvas) {
+  const gl = liquid.getContext();
+  const w = canvas.width, h = canvas.height;
+  const px = new Uint8Array(w * h * 4);
+  gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const flipped = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    flipped.set(px.subarray(y * w * 4, y * w * 4 + w * 4), (h - 1 - y) * w * 4);
+  }
+  return { px: flipped, w, h };
+}
+
+function channelRow(frame, y, ch) {
+  const { px, w, h } = frame;
+  const y0 = Math.max(0, y - 2), y1 = Math.min(h - 1, y + 2);
+  const out = new Float32Array(w);
+  for (let x = 0; x < w; x++) {
+    let s = 0, n = 0;
+    for (let yy = y0; yy <= y1; yy++) {
+      s += px[(yy * w + x) * 4 + ch];
       n++;
     }
-    return sum / (n * 3);
+    out[x] = s / n;
   }
-  function whiteFrac(x0, y0, x1, y1) {
-    let n = 0, f = 0;
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      const p = get(x, y); n++;
-      if (p[0] > 242 && p[1] > 242 && p[2] > 242) f++;
+  return out;
+}
+
+const MIN_CONF = 0.6;
+function corrShift(aRow, bRow, x, halfWin, maxShift) {
+  const n = bRow.length;
+  const x0 = Math.max(halfWin, x - halfWin), x1 = Math.min(n - 1 - halfWin, x + halfWin);
+  if (x1 - x0 < halfWin) return { shift: 0, score: 0 };
+  let meanA = 0, meanB = 0, cnt = 0;
+  for (let xx = x0; xx <= x1; xx++) {
+    meanA += aRow[xx];
+    const b = (xx >= 0 && xx < n) ? bRow[xx] : 0;
+    meanB += b;
+    cnt++;
+  }
+  meanA /= cnt; meanB /= cnt;
+  let bestShift = 0, bestScore = -Infinity;
+  for (let s = -maxShift; s <= maxShift; s++) {
+    let dot = 0, normA = 0, normB = 0;
+    for (let xx = x0; xx <= x1; xx++) {
+      const a = aRow[xx] - meanA;
+      const b = (xx + s >= 0 && xx + s < n) ? bRow[xx + s] - meanB : 0;
+      dot += a * b; normA += a * a; normB += b * b;
     }
-    return f / n;
+    const score = (normA > 1e-6 && normB > 1e-6) ? dot / Math.sqrt(normA * normB) : -1;
+    if (score > bestScore) { bestScore = score; bestShift = s; }
   }
-  function channelAsym(y, x0, x1) {
-    let sum = 0, n = 0;
-    for (let x = x0; x <= x1; x++) { const p = get(x, y); sum += Math.abs(p[0] - p[1]) + Math.abs(p[2] - p[1]); n++; }
-    return sum / (n * 2);
+  return { shift: bestShift, score: bestScore };
+}
+
+/* Displacement vs distance-from-rim, measured on the horizontal center line.
+ * Bands are defined by PHYSICAL distance from the rim so they match the
+ * bevel geometry regardless of card size:
+ *   edge: 2..8px from the rim   (strong refraction zone)
+ *   mid:  12..22px from the rim (bevel mid)
+ *   center: >= 40px from the rim (optically flat interior) */
+function displacementProfile(testFrame, baseFrame, rect) {
+  const cy = Math.round((rect.T + rect.B) / 2);
+  const aRow = channelRow(testFrame, cy, 1);
+  const bRow = channelRow(baseFrame, cy, 1);
+  const L = rect.L, R = rect.R, width = R - L;
+  if (width < 24) {
+    // tiny glass: single band across the middle third
+    const halfWin = 2;
+    const res = corrShift(aRow, bRow, Math.round((L + R) / 2), halfWin, 24);
+    const d = res.score >= MIN_CONF ? Math.abs(res.shift) : 0;
+    return { center: 0, mid: 0, edge: +d.toFixed(2), max: +d.toFixed(2), edgeMid: 0, validFrac: res.score >= MIN_CONF ? 1 : 0 };
   }
-  const L = rect.L, R = rect.R, T = rect.T, B = rect.B;
-  const cx = Math.round((L + R) / 2), cy = Math.round((T + B) / 2);
+  const halfWin = 4;
+  const maxShift = 24;
+  const sample = (x) => {
+    if (x - halfWin < 0 || x + halfWin >= aRow.length) return null;
+    const r = corrShift(aRow, bRow, x, halfWin, maxShift);
+    return r.score >= MIN_CONF ? Math.abs(r.shift) : null;
+  };
+  const collect = (fa, fb) => {
+    const out = [];
+    for (const rim of [L, R]) {
+      const dir = rim === L ? 1 : -1;
+      for (let d = Math.round(fa * 1); d <= Math.round(fb * 1); d++) {
+        const x = rim + dir * d;
+        const v = sample(x);
+        if (v !== null) out.push(v);
+      }
+    }
+    return out;
+  };
+  const avg = (arr) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : 0;
+  const edge = avg(collect(2, 8));
+  const mid = avg(collect(12, 22));
+  const centerArr = [];
+  for (let d = 40; d <= Math.min(60, Math.floor(width / 2) - 6); d++) {
+    for (const rim of [L, R]) {
+      const x = rim === L ? rim + d : rim - d;
+      const v = sample(x);
+      if (v !== null) centerArr.push(v);
+    }
+  }
+  const center = avg(centerArr);
+  const all = collect(1, 30);
+  const max = all.length ? +Math.max(...all).toFixed(2) : 0;
   return {
-    deviation: {
-      center: +rowDeviation(cy, cx - 80, cx + 80).toFixed(2),
-      edgeLeft: +rowDeviation(cy, L + 3, L + 16).toFixed(2),
-      edgeRight: +rowDeviation(cy, R - 16, R - 3).toFixed(2)
-    },
-    white: {
-      center: +whiteFrac(cx - 80, cy - 60, cx + 80, cy + 60).toFixed(4),
-      edge: +whiteFrac(cx - 80, T + 3, cx + 80, T + 26).toFixed(4)
-    },
-    asym: {
-      left: +channelAsym(cy, L + 3, L + 16).toFixed(2),
-      right: +channelAsym(cy, R - 16, R - 3).toFixed(2),
-      center: +channelAsym(cy, cx - 80, cx + 80).toFixed(2)
-    }
+    center, mid, edge, max,
+    edgeMid: +(mid > 0.05 ? edge / mid : 0).toFixed(2),
+    validFrac: +(collect(1, 30).length / (2 * 30)).toFixed(2)
   };
 }
+
+/* Channel-split displacement: |R shift - B shift| near the rim = dispersion. */
+function dispersionSplit(testFrame, baseFrame, rect) {
+  const cy = Math.round((rect.T + rect.B) / 2);
+  const run = (ch) => {
+    const aRow = channelRow(testFrame, cy, ch);
+    const bRow = channelRow(baseFrame, cy, ch);
+    const L = rect.L, R = rect.R;
+    const out = [];
+    for (const rim of [L, R]) {
+      for (let d = 2; d <= 10; d++) {
+        const x = rim === L ? rim + d : rim - d;
+        const r = corrShift(aRow, bRow, x, 4, 24);
+        if (r.score >= MIN_CONF) out.push(r.shift);
+      }
+    }
+    return out.length ? out.reduce((a, b) => a + b, 0) / out.length : 0;
+  };
+  const rimR = run(0), rimB = run(2);
+  return { rim: +Math.abs(rimR - rimB).toFixed(2), center: 0 };
+}
+
+function whiteFrac(frame, x0, y0, x1, y1) {
+  const { px, w, h } = frame;
+  let n = 0, f = 0;
+  for (let y = Math.max(0, y0); y <= Math.min(h - 1, y1); y++) {
+    for (let x = Math.max(0, x0); x <= Math.min(w - 1, x1); x++) {
+      const i = (y * w + x) * 4;
+      n++;
+      if (px[i] > 242 && px[i + 1] > 242 && px[i + 2] > 242) f++;
+    }
+  }
+  return n ? f / n : 0;
+}
+
 async function run() {
   const out = {};
   const glassEl = document.getElementById("glass");
-  const probeRect = glassEl.getBoundingClientRect();
-  if (probeRect.top < 0 || probeRect.bottom > window.innerHeight) {
-    out.error = "glass rect out of viewport";
-    document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
-    return;
-  }
+  const smallEl = document.getElementById("glass-small");
+  const tinyEl = document.getElementById("glass-tiny");
+  const rectOf = (el) => {
+    const r = el.getBoundingClientRect();
+    return { L: Math.round(r.left), R: Math.round(r.right), T: Math.round(r.top), B: Math.round(r.bottom) };
+  };
+
   const sceneCanvas = document.getElementById("scene-src");
-  const sctx = sceneCanvas.getContext("2d");
-  const bands = ["#101018", "#d94f8a", "#f2efe6", "#7a4fd9", "#101018", "#3fbfc9", "#f2efe6", "#d94f8a"];
-  for (let i = 0; i < bands.length; i++) { sctx.fillStyle = bands[i]; sctx.fillRect(0, i * 128, 1024, 128); }
-  sctx.strokeStyle = "#000"; sctx.lineWidth = 3;
-  for (let x = 0; x <= 1024; x += 48) { sctx.beginPath(); sctx.moveTo(x, 0); sctx.lineTo(x, 1024); sctx.stroke(); }
-  sctx.fillStyle = "#000"; sctx.font = "bold 110px monospace"; sctx.fillText("PROBE 123", 60, 600);
+  buildCodedScene(sceneCanvas);
 
   const canvas = document.createElement("canvas");
   canvas.id = "probe-gl";
   document.body.appendChild(canvas);
 
+  // Measurement config: zero blur keeps the coded scene readable at the rim
+  // so correlation can lock the exact sampling displacement; dispersion is
+  // raised so the R/B split is measurable. Default values are asserted in the
+  // unit suite (DEFAULT_GLASS) instead of here.
+  const probeGlass = { refraction: 0.16, blur: 0, dispersion: 0.1, fresnel: 0.16, specular: 0.16, edgeWidth: 0.16, edgeBlur: 0, edgeShadow: 0.1 };
   const liquid = new MinaLiquid({
     canvas, backend: "webgl", quality: "high",
     source: { type: "canvas", el: sceneCanvas },
-    glass: { refraction: 0.22, blur: 12, dispersion: 0.045, fresnel: 0.22, edgeWidth: 0.2 }
+    maxRefractionPx: 40,
+    glass: probeGlass
   });
   if (liquid.backend !== "webgl") {
     out.error = "no webgl backend: " + liquid.backend;
     document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
     return;
   }
+
+  /* Headless Chrome under --virtual-time-budget stops serving BeginFrames
+   * after a few rAFs, so readiness cannot rely on requestAnimationFrame.
+   * Drive the renderer's dirty pipeline directly and poll with timers. */
+  const waitReady = async () => {
+    for (let i = 0; i < 200 && liquid.getSceneState() !== "ready"; i++) {
+      liquid._sceneDirty = true;
+      liquid._frame();
+      if (liquid.getSceneState() !== "ready") await new Promise((r) => setTimeout(r, 5));
+    }
+    if (liquid.getSceneState() !== "ready") {
+      throw new Error("scene never became ready; state=" + liquid.getSceneState()
+        + " hasScene=" + liquid._hasScene + " elements=" + liquid._elements.length
+        + " backend=" + liquid.backend + " frames=" + (liquid.getStats().draws));
+    }
+  };
+  const waitFailed = async () => {
+    for (let i = 0; i < 400 && liquid.getSceneState() !== "failed"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  };
+  const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  await waitReady();
+  out.sceneState = liquid.getSceneState();
+  out.glClass = glassEl.className;
+  if (!glassEl.className.includes("mina-liquid-gl")) {
+    out.error = "GL class missing after scene ready";
+    document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
+    return;
+  }
+
+  const pxScale = canvas.width / window.innerWidth;  // physical px per CSS px
+  out.drawScale = +pxScale.toFixed(3);
+  out.safeLimitPx = +(40 * pxScale).toFixed(2);
+  const css = (v) => Math.round(v * pxScale);
+
   function forceFrame() {
     liquid._sceneDirty = true;
     liquid._geometryDirty = true;
     liquid._frame();
   }
+
+  /* ---- Baseline: refraction = dispersion = fresnel = specular = 0 ---- */
+  liquid.setGlass({ refraction: 0, dispersion: 0, fresnel: 0, specular: 0 });
   forceFrame();
+  const baseFrame = grabFrame(liquid, canvas);
 
-  const gl = liquid.getContext();
-  const w = canvas.width, h = canvas.height;
-  const stage = document.createElement("canvas");
-  stage.width = w; stage.height = h;
-  const stageCtx = stage.getContext("2d");
+  /* ---- Test: measurement glass settings ---- */
+  liquid.setGlass(probeGlass);
+  forceFrame();
+  const testFrame = grabFrame(liquid, canvas);
 
-  function snap() {
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, this.px);
-    const img = new ImageData(new Uint8ClampedArray(this.px), w, h);
-    stageCtx.putImageData(img, 0, 0);
-    stageCtx.save();
-    stageCtx.translate(0, h); stageCtx.scale(1, -1);
-    stageCtx.putImageData(img, 0, 0);
-    stageCtx.restore();
-  }
-  // simpler: readPixels is bottom-up; flip rows manually into ImageData
-  function grab() {
-    const px = new Uint8Array(w * h * 4);
-    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    const flipped = new Uint8ClampedArray(w * h * 4);
-    for (let y = 0; y < h; y++) {
-      const srcRow = y, dstRow = h - 1 - y;
-      flipped.set(px.subarray(srcRow * w * 4, srcRow * w * 4 + w * 4), dstRow * w * 4);
-    }
-    stageCtx.putImageData(new ImageData(flipped, w, h), 0, 0);
-  }
+  const big = rectOf(glassEl), small = rectOf(smallEl), tiny = rectOf(tinyEl);
+  const scaleRect = (r) => ({ L: css(r.L), R: css(r.R), T: css(r.T), B: css(r.B) });
+  out.displacement = {
+    big: displacementProfile(testFrame, baseFrame, scaleRect(big)),
+    small: displacementProfile(testFrame, baseFrame, scaleRect(small)),
+    tiny: displacementProfile(testFrame, baseFrame, scaleRect(tiny))
+  };
 
-  const rect = glassEl.getBoundingClientRect();
-  const R = { L: Math.round(rect.left), R: Math.round(rect.right), T: Math.round(rect.top), B: Math.round(rect.bottom) };
-  out.rect = R;
+  /* ---- dispersion: R/B sampling split (rim) ---- */
+  out.dispersionSplit = dispersionSplit(testFrame, baseFrame, scaleRect(big));
 
-  grab();
-  Object.assign(out, analyzeStage(stage, R));
+  /* ---- white clipping ---- */
+  out.white = {
+    center: +whiteFrac(testFrame, css(big.L) + css(40), css(big.T) + css(40), css(big.R) - css(40), css(big.B) - css(40)).toFixed(4),
+    edge: +whiteFrac(testFrame, css(big.L), css(big.T), css(big.R), css(big.T) + css(16)).toFixed(4)
+  };
 
-  // dispersion on/off
-  liquid.setGlass({ dispersion: 0 });
-  forceFrame(); grab();
-  const asymOff = analyzeStage(stage, R).asym;
-  liquid.setGlass({ dispersion: 0.045 });
-  forceFrame(); grab();
-  out.dispersion = { offLeftPlusRight: +(asymOff.left + asymOff.right).toFixed(2) };
-
-  // DOM sync: move element right; old region must go back to plain scene (~0)
-  glassEl.style.left = "900px";
-  forceFrame(); grab();
-  const moved = analyzeStage(stage, { L: 900, R: 1300, T: R.T, B: R.B });
-  const old = analyzeStage(stage, { L: R.L + 3, R: R.L + 160, T: R.T, B: R.B });
-  out.domSync = {
-    movedEdgeLeft: moved.deviation.edgeLeft,
-    oldRegionCenterDev: old.deviation.center
+  /* ---- background restoration after DOM move ---- */
+  glassEl.style.left = "700px";
+  forceFrame();
+  const movedFrame = grabFrame(liquid, canvas);
+  const oldRegion = { L: css(big.L) + css(4), R: css(big.L) + css(180), T: css(big.T), B: css(big.B) };
+  const movedRect = scaleRect({ L: 700, R: 1100, T: big.T, B: big.B });
+  out.domMove = {
+    oldRegionRestored: +displacementProfile(movedFrame, baseFrame, oldRegion).max.toFixed(2),
+    newRegionRefracts: +displacementProfile(movedFrame, baseFrame, movedRect).edge.toFixed(2)
   };
   glassEl.style.left = "300px";
   forceFrame();
 
-  // Context lost -> fallback classes
-  canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
-  out.contextLost = { backend: liquid.backend, state: liquid.state, glassClass: glassEl.className };
-  canvas.dispatchEvent(new Event("webglcontextrestored"));
+  /* ---- multiple glass overlap ---- */
+  out.overlap = {
+    bigEdge: out.displacement.big.edge,
+    smallEdge: out.displacement.small.edge,
+    tinyEdge: out.displacement.tiny.edge
+  };
 
+  /* ---- source failure fallback: bad image ---- */
+  liquid.setSource({ type: "image", src: "/definitely-missing-probe.png" });
+  await waitFailed();
+  if (liquid.getSceneState() !== "failed") await waitMs(500);
+  out.sourceFailure = {
+    state: liquid.getSceneState(),
+    glassClass: glassEl.className,
+    hasGlClass: glassEl.className.includes("mina-liquid-gl")
+  };
+  liquid.setSource({ type: "canvas", el: sceneCanvas });
+  await waitReady();
+
+  /* ---- context lost / restored ---- */
+  canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+  out.contextLost = {
+    backend: liquid.backend, state: liquid.state,
+    glassClass: glassEl.className,
+    hasGlClass: glassEl.className.includes("mina-liquid-gl")
+  };
+  canvas.dispatchEvent(new Event("webglcontextrestored"));
+  out.contextRestoredImmediate = {
+    backend: liquid.backend,
+    hasGlClass: glassEl.className.includes("mina-liquid-gl")
+  };
+  await waitReady();
+  out.contextRestoredAfterFrames = {
+    state: liquid.getSceneState(),
+    hasGlClass: glassEl.className.includes("mina-liquid-gl")
+  };
+
+  /* ---- destroy ---- */
   liquid.destroy();
   out.destroyed = liquid.state;
+  out.destroyedClass = glassEl.className;
+
   document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
 }
 window.addEventListener("load", () => run().catch((e) => {

@@ -21,7 +21,15 @@
  *
  * Glass model: the surface is a rounded box with a circular-cap bevel on the
  * rim. The interior is optically flat (no distortion); curvature, refraction,
- * fresnel and specular grow toward the edge only.
+ * fresnel and specular grow toward the edge only. The bevel slope is
+ * normalized and displacement is capped (uMaxDisplacementPx / maxRefractionPx)
+ * so no card size can produce extreme UV jumps near the rim.
+ *
+ * Scene readiness: the GL-active class (.mina-liquid-gl) is only applied
+ * after the scene has been uploaded to the GPU AND one full frame has been
+ * composited successfully. Until then (and on any source / shader / FBO
+ * failure) elements keep the CSS frosted / static surface, so content and
+ * page background are never transparent, black or invisible.
  *
  * Fallback chain: WebGL2 -> CSS frosted (backdrop-filter) -> static surface.
  * Content is never hidden and the page background never turns black.
@@ -39,23 +47,41 @@ const MAX_GLASS_ELEMENTS = 16;
 const MAX_TEXTURE_EDGE = 2048;
 const DEFAULT_MAX_PIXEL_COUNT = 1920 * 1080;
 
+/* Scene readiness states (this.sceneState):
+ *   'none'       no source spec given yet
+ *   'loading'    source accepted, pixels not on the GPU yet (image decoding,
+ *                video metadata, draw of a canvas source...)
+ *   'ready'      uploaded to the GPU and at least one frame composited
+ *   'failed'     source failed permanently (load error, CORS/tainted canvas,
+ *                invalid source, shader/pipeline failure) -> CSS frosted/static
+ * The public getSceneState() always reflects one of these. */
+const SCENE_STATE_NONE = 'none';
+const SCENE_STATE_LOADING = 'loading';
+const SCENE_STATE_READY = 'ready';
+const SCENE_STATE_FAILED = 'failed';
+
 /* Global glass appearance. "blur" is expressed in design px and mapped to a
  * blur-pyramid LOD; refraction is a fraction of the edge width; dispersion
  * offsets are relative to the refraction offset (kept tiny on purpose). */
 const DEFAULT_GLASS = {
-    refraction: 0.22,
-    blur: 12,
-    fresnel: 0.22,
-    specular: 0.22,
-    dispersion: 0.045,
-    edgeBlur: 0.45,
-    edgeShadow: 0.24,
-    edgeWidth: 0.2,
+    refraction: 0.16,
+    blur: 10,
+    fresnel: 0.16,
+    specular: 0.16,
+    dispersion: 0.03,
+    edgeBlur: 0.4,
+    edgeShadow: 0.22,
+    edgeWidth: 0.16,
     tint: 0.05,
     tintColor: [1.0, 1.0, 1.0],
-    saturation: 1.08,
+    saturation: 1.06,
     brightness: 1.0
 };
+
+/* Safety limit for refraction displacement, in CSS px (design px). The shader
+ * divides it by uResolution-derived px scale to derive a per-pixel cap that is
+ * resolution independent. Public option/API: maxRefractionPx (default 40). */
+const DEFAULT_MAX_REFRACTION_PX = 40;
 
 /* Pipeline shape per quality tier. quality stays a WebGL tier; environment
  * problems (no WebGL2 / WebKit / touch-first) fall back to CSS frost. */
@@ -131,6 +157,12 @@ void main() {
  * glass and provides an analytic outward gradient. A circular-cap bevel
  * h(t) = 1 - sqrt(1 - t^2) (t = 0 center -> 1 rim) gives the surface slope;
  * refraction offsets grow with the slope, so the center stays flat.
+ *
+ * Refraction safety: the raw bevel slope diverges at t -> 1, so it is
+ * (1) smoothly saturated (denom floor + soft-knee) and (2) the final
+ * displacement in pixels is clamped to uMaxDisplacementPx, resolved in
+ * physical px. This keeps center ~= 0, mid small, edge strongest, while
+ * guaranteeing no extreme UV jump for any card size.
  */
 function buildCompositeShaderSource(mode) {
     const perf = mode === 'perf';
@@ -161,6 +193,7 @@ uniform float uSaturation;
 uniform float uBrightness;
 uniform float uTint;
 uniform float uHasScene;
+uniform float uMaxDispPx;           // displacement cap in physical px
 
 in vec2 vUv;
 out vec4 outColor;
@@ -228,12 +261,27 @@ void main() {
         float t = 1.0 - clamp(d / w, 0.0, 1.0);              // 0 center -> 1 rim
 
         vec2 gdir = sdRoundBoxGrad(p, half_, shape.x);
-        float tc = min(t, 0.985);
-        float slope = tc / sqrt(max(1.0 - tc * tc, 1e-4));   // circular-cap bevel
+
+        /* Circular-cap bevel with a smooth saturation near the rim.
+         * Raw slope t/sqrt(1-t^2) diverges at t->1; the soft-knee form
+         * keeps the monotonic "center 0 -> mid small -> edge strongest"
+         * profile while bounding the gradient norm. */
+        float tc = min(t, 0.98);
+        float denom = sqrt(max(1.0 - tc * tc, 0.04));   // slope <= 5 near rim
+        float slope = tc / denom;
+        float knee = smoothstep(0.80, 1.0, slope);      // saturate smoothly
+        slope = mix(slope, 5.0, knee * 0.85);
         vec2 n2 = gdir * slope;
 
         float lod = shape.y + t * uEdgeBlur;
+
+        /* Physical displacement: refraction * edge width, then capped by
+         * uMaxDispPx (already multiplied by the px scale on the JS side). */
         vec2 refractPx = n2 * uRefraction * w * shape.z;
+        float dispLen = length(refractPx);
+        if (dispLen > uMaxDispPx && dispLen > 0.0) {
+            refractPx *= uMaxDispPx / dispLen;
+        }
         vec2 ruv = fragPx + refractPx;
 
         vec3 col;
@@ -313,6 +361,10 @@ class MinaLiquid {
         this.backend = 'static';
         this.state = 'idle';   // idle | ready | fallback-frost | fallback-static | destroyed
 
+        this.maxRefractionPx = typeof options.maxRefractionPx === 'number' && isFinite(options.maxRefractionPx)
+            ? clampValue(Math.abs(options.maxRefractionPx), 4, 512)
+            : DEFAULT_MAX_REFRACTION_PX;
+
         this.canvas = options.canvas
             || (typeof document !== 'undefined' ? document.getElementById('mina-glcanvas') : null)
             || null;
@@ -327,6 +379,7 @@ class MinaLiquid {
         this._imgW = 1;
         this._imgH = 1;
         this._hasScene = false;
+        this._sceneFrameDrawn = false;   // >=1 composite ran with a valid scene
         this._targets = null;
         this._targetW = 0;
         this._targetH = 0;
@@ -337,7 +390,14 @@ class MinaLiquid {
 
         this._sourceSpec = null;
         this._sourceEl = null;
+        this._sourceToken = null;          // guards stale async image callbacks
         this._videoActive = false;
+        this._ownsVideoEl = false;       // we created the <video>: destroy() must release it
+        this._videoCleanup = null;        // { listeners, rafId, vrafId, rafActive }
+        this._downscaleCanvas = null;     // reusable staging canvas for >2048px sources
+        this._downscaleW = 0;
+        this._downscaleH = 0;
+        this.sceneState = SCENE_STATE_NONE;
 
         this._elements = [];
         this._geometryDirty = true;
@@ -473,9 +533,13 @@ class MinaLiquid {
             blur: this._createProgram(BLUR_SHADER_SOURCE),
             composite: this._createProgram(buildCompositeShaderSource(QUALITY_CONFIG[this.quality].shaderMode))
         };
-        if (!programs.composite) {
-            // Shader setup failed: degrade to CSS frost instead of a black page.
-            console.error('MinaLiquid: composite program failed, falling back to CSS frost');
+        const failedKey = Object.keys(programs).find((key) => !programs[key]);
+        if (failedKey) {
+            // Any program (scene / blur / composite) failing means the GL
+            // pipeline cannot render; release half-initialized resources and
+            // fall back to CSS frost -> static. Never continue on broken GL.
+            console.error('MinaLiquid: program failed:', failedKey);
+            this._teardownGlObjects();
             this._switchBackend(MinaLiquid.supportsNativeBlur() ? 'native' : 'static');
             return;
         }
@@ -483,7 +547,16 @@ class MinaLiquid {
         this._cacheUniforms();
 
         this._sceneTex = this._createTexture(true);
-        this._ensureTargets();
+        if (!this._sceneTex) {
+            console.error('MinaLiquid: scene texture allocation failed');
+            this._teardownGlObjects();
+            this._switchBackend(MinaLiquid.supportsNativeBlur() ? 'native' : 'static');
+            return;
+        }
+        if (!this._ensureTargets(true)) {
+            console.error('MinaLiquid: framebuffer allocation failed');
+            // _ensureTargets already released and switched the backend.
+        }
     }
 
     _createQuad() {
@@ -553,6 +626,7 @@ class MinaLiquid {
     _createTexture(mipmap) {
         const gl = this.gl;
         const tex = gl.createTexture();
+        if (!tex) return null;
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mipmap ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -561,9 +635,16 @@ class MinaLiquid {
         return tex;
     }
 
+    /* Framebuffer completeness check for the currently bound FBO. */
+    _isFramebufferComplete() {
+        const gl = this.gl;
+        return gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    }
+
     _createRT(width, height) {
         const gl = this.gl;
         const tex = gl.createTexture();
+        if (!tex) return null;
         gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -571,9 +652,16 @@ class MinaLiquid {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         const fbo = gl.createFramebuffer();
+        if (!fbo) { gl.deleteTexture(tex); return null; }
         gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        const complete = this._isFramebufferComplete();
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (!complete) {
+            gl.deleteFramebuffer(fbo);
+            gl.deleteTexture(tex);
+            return null;
+        }
         return { fbo, tex, width, height };
     }
 
@@ -583,31 +671,46 @@ class MinaLiquid {
         if (rt.tex) this.gl.deleteTexture(rt.tex);
     }
 
-    _ensureTargets() {
+    /* Returns true when usable targets exist (or were rebuilt successfully).
+     * `force` rebuilds even if dimensions match (used after GL init). */
+    _ensureTargets(force) {
         const gl = this.gl;
-        if (!gl) return;
+        if (!gl) return false;
         const w = this._bufferW;
         const h = this._bufferH;
-        if (this._targets && this._targetW === w && this._targetH === h) return;
+        if (!force && this._targets && this._targetW === w && this._targetH === h) return true;
         this._destroyTargets();
 
         const levels = QUALITY_CONFIG[this.quality].pyramidLevels;
-        const targets = { sceneRT: this._createRT(w, h) };
-        if (levels >= 1) {
-            targets.L0 = this._createRT(Math.max(1, w >> 1), Math.max(1, h >> 1));
-            targets.T0 = this._createRT(Math.max(1, w >> 1), Math.max(1, h >> 1));
+        const targets = {};
+        let failed = false;
+        const add = (key, tw, th) => {
+            if (failed) return;
+            const rt = this._createRT(Math.max(1, tw), Math.max(1, th));
+            if (!rt) { failed = true; return; }
+            targets[key] = rt;
+        };
+        add('sceneRT', w, h);
+        if (levels >= 1) { add('L0', w >> 1, h >> 1); add('T0', w >> 1, h >> 1); }
+        if (levels >= 2) { add('L1', w >> 2, h >> 2); add('T1', w >> 2, h >> 2); }
+        if (levels >= 3) { add('L2', w >> 3, h >> 3); add('T2', w >> 3, h >> 3); }
+
+        if (failed || !targets.sceneRT) {
+            // Release the partially allocated pyramid before degrading.
+            for (const key of Object.keys(targets)) this._destroyRT(targets[key]);
+            this._targets = null;
+            this._targetW = 0;
+            this._targetH = 0;
+            console.error('MinaLiquid: framebuffer/texture allocation failed');
+            this._teardownGlObjects();
+            this._switchBackend(MinaLiquid.supportsNativeBlur() ? 'native' : 'static');
+            return false;
         }
-        if (levels >= 2) {
-            targets.L1 = this._createRT(Math.max(1, w >> 2), Math.max(1, h >> 2));
-            targets.T1 = this._createRT(Math.max(1, w >> 2), Math.max(1, h >> 2));
-        }
-        if (levels >= 3) {
-            targets.L2 = this._createRT(Math.max(1, w >> 3), Math.max(1, h >> 3));
-            targets.T2 = this._createRT(Math.max(1, w >> 3), Math.max(1, h >> 3));
-        }
+
         this._targets = targets;
         this._targetW = w;
         this._targetH = h;
+        return true;
     }
 
     _destroyTargets() {
@@ -626,28 +729,42 @@ class MinaLiquid {
      *   { type: 'video',    src: '/bg.mp4' }          (or { el: HTMLVideoElement })
      *   { type: 'canvas',   el: HTMLCanvasElement }
      *   { type: 'gradient', stops: [[0,'#a'],[1,'#b']], angle?: 135 }
-     * A source is always renderer-owned; DOM is never captured.
+     * A source is always renderer-owned; DOM is never captured. Passing a
+     * user-owned <video>/<img>/<canvas> element only tracks it (listeners,
+     * frame callbacks); destroy() never mutates or releases user elements.
+     *
+     * Scene states driven here: loading -> ready (after GPU upload + one
+     * composited frame) or loading -> failed (load error / CORS / invalid).
      */
     setSource(spec) {
         if (this.destroyed || !spec) return;
+        this._teardownVideo();
+        this._sourceEl = null;
+        this._ownsVideoEl = false;
+        this._hasScene = false;
+        this._sceneFrameDrawn = false;
+
         const type = spec.type || (spec.el ? 'element' : 'image');
         this._sourceSpec = Object.assign({ type }, spec);
-        this._videoActive = false;
+        this._setSceneState(SCENE_STATE_LOADING);
 
         if (type === 'image') {
             if (spec.el && spec.el.complete !== false) {
                 this._adoptSourceElement(spec.el);
                 return;
             }
-            const img = new Image();
+            const img = spec.el || (typeof Image !== 'undefined' ? new Image() : null);
+            if (!img) { this._sceneFailed('no Image constructor'); return; }
             img.crossOrigin = 'anonymous';
+            const token = this._sourceToken = {};
             const self = this;
-            img.onload = function () { if (!self.destroyed) self._adoptSourceElement(img); };
+            img.onload = function () { if (!self.destroyed && self._sourceToken === token) self._adoptSourceElement(img); };
             img.onerror = function () {
+                if (self.destroyed || self._sourceToken !== token) return;
                 console.error('MinaLiquid: scene image failed to load:', spec.src);
-                if (!self.destroyed) self._clearScene();
+                self._sceneFailed('image load error');
             };
-            img.src = spec.src;
+            if (img.src !== spec.src) img.src = spec.src;
         } else if (type === 'video') {
             let video = spec.el;
             if (!video && typeof document !== 'undefined') {
@@ -656,37 +773,249 @@ class MinaLiquid {
                 video.loop = true;
                 video.playsInline = true;
                 video.setAttribute('playsinline', '');
-                const self = this;
-                video.addEventListener('playing', function () { self._videoActive = true; });
-                video.addEventListener('pause', function () { self._videoActive = false; });
-                video.src = spec.src;
-                video.play().catch(function () { /* autoplay blocked: first frame still usable */ });
+                this._ownsVideoEl = true;
             }
-            this._sourceEl = video;
-            this._sceneDirty = true;
-            this.requestRender();
+            if (!video || typeof video.play !== 'function') {
+                this._sceneFailed('video element unavailable');
+                return;
+            }
+            this._setupVideoTracking(video, spec);
         } else if (type === 'gradient') {
             this._adoptSourceElement(this._buildGradientCanvas(spec));
         } else if (type === 'canvas' || type === 'element') {
+            if (!spec.el || (spec.el.width | 0) <= 0 || (spec.el.height | 0) <= 0) {
+                this._sceneFailed('invalid canvas element');
+                return;
+            }
             this._adoptSourceElement(spec.el);
         } else {
-            console.warn('MinaLiquid: unknown source type:', type);
+            this._sceneFailed('unknown source type: ' + type);
+        }
+    }
+
+    /* Mark the scene failed: stop tracking, drop the GPU scene, show the CSS
+     * surface. Never leaves a transparent element behind. */
+    _sceneFailed(reason) {
+        console.warn('MinaLiquid: scene failed:', reason);
+        this._teardownVideo();
+        this._sourceEl = null;
+        this._ownsVideoEl = false;
+        this._hasScene = false;
+        this._sceneFrameDrawn = false;
+        this._setSceneState(SCENE_STATE_FAILED);
+        this._sceneDirty = true;
+        this._syncElementClasses();
+        this.requestRender();
+    }
+
+    _setSceneState(next) {
+        if (this.sceneState === next) return;
+        this.sceneState = next;
+        if (this._onSceneState) {
+            try { this._onSceneState(next); } catch (error) { /* user callback */ }
         }
     }
 
     _adoptSourceElement(el) {
-        if (!el) { this._clearScene(); return; }
+        if (!el) { this._sceneFailed('missing source element'); return; }
         this._sourceEl = el;
         this._sceneDirty = true;
         this._emptyDrawn = false;
+        this._setSceneState(SCENE_STATE_LOADING);
         this.requestRender();
     }
 
     _clearScene() {
+        this._teardownVideo();
         this._sourceEl = null;
+        this._ownsVideoEl = false;
         this._hasScene = false;
+        this._sceneFrameDrawn = false;
+        this._setSceneState(SCENE_STATE_NONE);
         this._sceneDirty = true;
         this.requestRender();
+    }
+
+    /**
+     * Attach the full video lifecycle. Works identically for internally
+     * created videos and user-provided elements:
+     *   - requestVideoFrameCallback (when available) drives per-new-frame
+     *     scene updates; RAF is used ONLY as a fallback when unsupported.
+     *   - loadedmetadata / loadeddata / canplay / playing / pause / seeked /
+     *     ended each mark the scene dirty so a render always happens.
+     * A paused/ended video never schedules continuous frames.
+     */
+    _setupVideoTracking(video, spec) {
+        this._sourceEl = video;
+        this._videoActive = false;
+        this._setSceneState(SCENE_STATE_LOADING);
+
+        const self = this;
+        const markDirty = function () {
+            self._sceneDirty = true;
+            self._emptyDrawn = false;
+            self.requestRender();
+        };
+        const onReady = function () {
+            if (self.destroyed) return;
+            if (self.sceneState === SCENE_STATE_LOADING) self._setSceneState(SCENE_STATE_LOADING);
+            markDirty();
+        };
+        const onPlaying = function () {
+            if (self.destroyed) return;
+            self._videoActive = true;
+            markDirty();
+            self._scheduleVideoFrame();   // rVFC path (no-op if unsupported)
+            self._startVideoRaf();        // RAF fallback path (no-op if rVFC)
+        };
+        const onPause = function () {
+            if (self.destroyed) return;
+            self._videoActive = false;
+            markDirty();
+            self._stopVideoRaf();
+        };
+        const onEnded = function () {
+            if (self.destroyed) return;
+            self._videoActive = false;
+            markDirty();
+            self._stopVideoRaf();
+        };
+        const onLoadedData = function () {
+            if (self.destroyed) return;
+            onReady();
+            if (self._videoActive) {
+                self._scheduleVideoFrame();
+                self._startVideoRaf();
+            }
+        };
+
+        const listeners = [
+            [video, 'loadedmetadata', onReady],
+            [video, 'loadeddata', onLoadedData],
+            [video, 'canplay', onReady],
+            [video, 'playing', onPlaying],
+            [video, 'pause', onPause],
+            [video, 'seeked', onReady],
+            [video, 'ended', onEnded]
+        ];
+        for (const [target, type, fn] of listeners) {
+            target.addEventListener(type, fn);
+        }
+
+        let vrafId = 0;
+        let rafId = 0;
+        let rafActive = false;
+        const supportsVrFc = typeof video.requestVideoFrameCallback === 'function';
+
+        if (supportsVrFc) {
+            const onVideoFrame = function () {
+                if (self.destroyed || !self._videoActive) return;
+                self._sceneDirty = true;
+                self._emptyDrawn = false;
+                // Composite on the next display frame, then re-register.
+                self.requestRender();
+                self._scheduleVideoFrame();
+            };
+            this._videoFrameHandler = onVideoFrame;
+        } else {
+            // RAF fallback: only while the video is actually playing.
+            const rafTick = function () {
+                if (self.destroyed || !self._videoActive) { rafActive = false; rafId = 0; return; }
+                self._sceneDirty = true;
+                self.requestRender();
+                rafId = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(rafTick) : 0;
+                rafActive = rafId !== 0;
+            };
+            this._videoRafTick = rafTick;
+        }
+
+        this._videoCleanup = {
+            video,
+            listeners,
+            getVrafId: () => vrafId,
+            setVrafId: (v) => { vrafId = v; },
+            cancelVraf: () => {
+                if (vrafId && typeof video.cancelVideoFrameCallback === 'function') {
+                    video.cancelVideoFrameCallback(vrafId);
+                }
+                vrafId = 0;
+            },
+            getRafId: () => rafId,
+            setRafId: (v) => { rafId = v; },
+            setRafActive: (v) => { rafActive = v; },
+            cancelRaf: () => {
+                if (rafId && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+                rafId = 0;
+                rafActive = false;
+            },
+            isRafActive: () => rafActive
+        };
+
+        this._sceneDirty = true;
+        this.requestRender();
+
+        // Kick playback for internally created videos only.
+        if (this._ownsVideoEl && spec && spec.src && video.src !== spec.src) {
+            video.src = spec.src;
+        }
+        if (this._ownsVideoEl) {
+            const playPromise = video.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch(function () { /* autoplay blocked: first frame still usable */ });
+            }
+        }
+    }
+
+    /* Register one requestVideoFrameCallback tick (re-registered per frame by
+     * the handler itself while the video is playing). */
+    _scheduleVideoFrame() {
+        const cleanup = this._videoCleanup;
+        if (this.destroyed || !cleanup || !this._videoFrameHandler) return;
+        if (cleanup.getVrafId()) return;
+        if (!this._sourceEl || this._sourceEl.paused !== false) return;
+        if (typeof this._sourceEl.requestVideoFrameCallback !== 'function') return;
+        cleanup.setVrafId(this._sourceEl.requestVideoFrameCallback(this._videoFrameHandler));
+    }
+
+    _startVideoRaf() {
+        const cleanup = this._videoCleanup;
+        if (this.destroyed || !cleanup || cleanup.isRafActive()) return;
+        if (typeof this._videoRafTick !== 'function') return;
+        if (!this._videoActive) return;
+        if (typeof requestAnimationFrame !== 'function') return;
+        cleanup.setRafActive(true);
+        this._videoRafTick();
+    }
+
+    _stopVideoRaf() {
+        const cleanup = this._videoCleanup;
+        if (!cleanup) return;
+        cleanup.cancelRaf();
+    }
+
+    /* Stop all video-driven scheduling and listeners. Releases only what we
+     * created; user-provided <video> elements are merely untracked. */
+    _teardownVideo() {
+        const cleanup = this._videoCleanup;
+        if (cleanup) {
+            cleanup.cancelVraf();
+            cleanup.cancelRaf();
+            for (const [target, type, fn] of cleanup.listeners) {
+                target.removeEventListener(type, fn);
+            }
+            this._videoCleanup = null;
+        }
+        if (this._ownsVideoEl && this._sourceEl) {
+            const video = this._sourceEl;
+            try {
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
+            } catch (error) { /* already detached */ }
+        }
+        this._videoFrameHandler = null;
+        this._videoRafTick = null;
+        this._videoActive = false;
     }
 
     _buildGradientCanvas(spec) {
@@ -788,33 +1117,64 @@ class MinaLiquid {
         const el = this._sourceEl;
         if (!gl || !el) { this._hasScene = false; return; }
 
-        const w = el.naturalWidth || el.videoWidth || el.width || 0;
-        const h = el.naturalHeight || el.videoHeight || el.height || 0;
+        let w = el.naturalWidth || el.videoWidth || el.width || 0;
+        let h = el.naturalHeight || el.videoHeight || el.height || 0;
         if (!w || !h) { this._hasScene = false; return; }
 
         let source = el;
         if (w > MAX_TEXTURE_EDGE || h > MAX_TEXTURE_EDGE) {
+            // Reusable staging canvas: never allocate a new canvas per frame.
             const ratio = Math.min(MAX_TEXTURE_EDGE / w, MAX_TEXTURE_EDGE / h);
-            const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(w * ratio));
-            canvas.height = Math.max(1, Math.round(h * ratio));
-            canvas.getContext('2d').drawImage(el, 0, 0, canvas.width, canvas.height);
-            source = canvas;
+            const dw = Math.max(1, Math.round(w * ratio));
+            const dh = Math.max(1, Math.round(h * ratio));
+            if (!this._downscaleCanvas || this._downscaleW !== dw || this._downscaleH !== dh) {
+                if (!this._downscaleCanvas && typeof document !== 'undefined' && document.createElement) {
+                    this._downscaleCanvas = document.createElement('canvas');
+                }
+                if (!this._downscaleCanvas) { this._hasScene = false; return; }
+                this._downscaleCanvas.width = dw;
+                this._downscaleCanvas.height = dh;
+                this._downscaleW = dw;
+                this._downscaleH = dh;
+            }
+            const ctx = this._downscaleCanvas.getContext('2d');
+            if (!ctx || typeof ctx.drawImage !== 'function') { this._hasScene = false; return; }
+            try {
+                ctx.drawImage(el, 0, 0, dw, dh);
+            } catch (error) {
+                // Tainted user canvas: cannot downscale; reject this upload.
+                console.error('MinaLiquid: scene downscale failed:', error && error.message);
+                this._hasScene = false;
+                return;
+            }
+            source = this._downscaleCanvas;
+            w = dw;
+            h = dh;
         }
 
         gl.bindTexture(gl.TEXTURE_2D, this._sceneTex);
         try {
+            // Purge any stale GL error before the upload so the check below
+            // only reflects this texImage2D + generateMipmap pair.
+            gl.getError();
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
             gl.generateMipmap(gl.TEXTURE_2D);
-            this._imgW = source.naturalWidth || source.width;
-            this._imgH = source.naturalHeight || source.height;
+            const err = gl.getError();
+            if (err && err !== gl.NO_ERROR) throw new Error('GL error 0x' + err.toString(16));
+            this._imgW = w;
+            this._imgH = h;
             this._hasScene = true;
         } catch (error) {
-            // Tainted canvas / CORS failure: keep the page usable via fallback.
+            // Tainted canvas / CORS failure / upload failure: reject the scene
+            // (elements keep the CSS surface; nothing becomes transparent).
             console.error('MinaLiquid: scene upload failed:', error && error.message);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
             this._hasScene = false;
+            if (this.sceneState === SCENE_STATE_LOADING || this.sceneState === SCENE_STATE_READY) {
+                this._sceneFailed('texture upload failed');
+            }
         }
     }
 
@@ -841,11 +1201,11 @@ class MinaLiquid {
         const gl = this.gl;
         if (!gl) return;
         const cfg = QUALITY_CONFIG[this.quality];
-        this._ensureTargets();
+        if (!this._ensureTargets()) return;
         if (cfg.pyramidLevels === 0) { this._uploadScene(); return; }
 
         this._uploadScene();
-        if (!this._hasScene) return;
+        if (!this._hasScene || !this._targets) return;
 
         const targets = this._targets;
         const su = this._uniforms.scene;
@@ -934,6 +1294,9 @@ class MinaLiquid {
         if (u.uBrightness) gl.uniform1f(u.uBrightness, g.brightness);
         if (u.uTint) gl.uniform1f(u.uTint, g.tint);
         if (u.uHasScene) gl.uniform1f(u.uHasScene, this._hasScene ? 1 : 0);
+        // Displacement cap in physical (backbuffer) px: scale the design-px
+        // limit by the render scale so it is resolution independent.
+        if (u.uMaxDispPx) gl.uniform1f(u.uMaxDispPx, this.maxRefractionPx * this._drawScale);
 
         const textures = {};
         if (cfg.pyramidLevels === 0) {
@@ -1077,11 +1440,19 @@ class MinaLiquid {
         };
     }
 
+    /* GL is allowed to own element pixels only when: the backend is webgl,
+     * the scene is on the GPU, AND at least one composite with that scene has
+     * finished. Until then (or after any failure) elements keep the CSS
+     * frosted / static surface. */
+    _glPixelsAllowed() {
+        return this.backend === 'webgl' && this._hasScene && this._sceneFrameDrawn && !this.contextLost;
+    }
+
     _syncElementClasses() {
         if (typeof document === 'undefined' || !document.querySelectorAll) return;
         const nodes = document.querySelectorAll(this.selector + ', ' + LEGACY_LIQUID_SELECTOR);
         const add = this.destroyed ? null
-            : (this.backend === 'webgl' ? GL_ACTIVE_CLASS
+            : (this._glPixelsAllowed() ? GL_ACTIVE_CLASS
                 : (this.backend === 'native' ? FALLBACK_CLASS_NATIVE : FALLBACK_CLASS_STATIC));
         for (let i = 0; i < nodes.length; i++) {
             const el = nodes[i];
@@ -1139,9 +1510,22 @@ class MinaLiquid {
             this._drawComposite();
             this._stats.lastDrawMs = start ? (performance.now() - start) : 0;
             this._emptyDrawn = this._elements.length === 0;
+
+            // First successful composite with a live GPU scene promotes the
+            // scene to 'ready' and lets GL own the element pixels. A scene
+            // that already failed stays on the CSS surface until setSource
+            // is called again (no zombie GL promotion).
+            if (this._hasScene && this._elements.length > 0 && !this._sceneFrameDrawn
+                && this.sceneState !== SCENE_STATE_FAILED) {
+                this._sceneFrameDrawn = true;
+                this._setSceneState(SCENE_STATE_READY);
+                this._syncElementClasses();
+            }
         }
 
-        if (videoActive) this.requestRender();
+        // Continuous frames come from the video driver (rVFC or RAF
+        // fallback); only the fallback needs the display-frame chain here.
+        if (videoActive && !this._videoFrameHandler) this.requestRender();
     }
 
     _observeElements() {
@@ -1161,8 +1545,13 @@ class MinaLiquid {
         if (!canvas) return;
 
         this._addEventListener(canvas, 'webglcontextlost', function (event) {
-            event.preventDefault();
+            if (event && event.preventDefault) event.preventDefault();
             self.contextLost = true;
+            self._hasScene = false;
+            self._sceneFrameDrawn = false;
+            if (self.sceneState === SCENE_STATE_READY) self._setSceneState(SCENE_STATE_LOADING);
+            self._cancelFrame();
+            self._stopVideoRaf();
             self._teardownGlObjects();
             self._switchBackend(MinaLiquid.supportsNativeBlur() ? 'native' : 'static');
             console.warn('MinaLiquid: WebGL context lost, switched to', self.backend);
@@ -1170,11 +1559,12 @@ class MinaLiquid {
 
         this._addEventListener(canvas, 'webglcontextrestored', function () {
             const wantWebGL = self.backendPreference === 'webgl' || self.backendPreference === 'auto';
-            if (wantWebGL && self.gl && !self.gl.isContextLost()) {
-                self.contextLost = false;
-                self._switchBackend('webgl');
-                console.info('MinaLiquid: WebGL context restored');
-            }
+            if (self.destroyed || !wantWebGL || !self.gl || self.gl.isContextLost()) return;
+            self.contextLost = false;
+            self._sceneFrameDrawn = false;   // must re-earn GL via a fresh scene frame
+            if (self._sourceSpec) self._hasScene = false;
+            self._switchBackend('webgl');
+            console.info('MinaLiquid: WebGL context restored');
         }, false);
     }
 
@@ -1190,6 +1580,8 @@ class MinaLiquid {
             this._applyCanvasSize();
             this._sceneDirty = true;
             this._geometryDirty = true;
+            // Classes stay on the CSS surface until the first scene frame
+            // completes; _frame() re-syncs after promotion.
             this._syncElementClasses();
             this.requestRender();
         } else {
@@ -1203,6 +1595,13 @@ class MinaLiquid {
 
     _teardownGlObjects() {
         const gl = this.gl;
+        if (this._quad) {
+            if (gl) {
+                if (this._quad.vbo) gl.deleteBuffer(this._quad.vbo);
+                if (this._quad.vao) gl.deleteVertexArray(this._quad.vao);
+            }
+            this._quad = null;
+        }
         if (!gl) return;
         for (const key of Object.keys(this._programs)) {
             if (this._programs[key]) gl.deleteProgram(this._programs[key]);
@@ -1211,12 +1610,8 @@ class MinaLiquid {
         this._uniforms = {};
         this._destroyTargets();
         if (this._sceneTex) { gl.deleteTexture(this._sceneTex); this._sceneTex = null; }
-        if (this._quad) {
-            if (this._quad.vbo) gl.deleteBuffer(this._quad.vbo);
-            if (this._quad.vao) gl.deleteVertexArray(this._quad.vao);
-            this._quad = null;
-        }
         this._hasScene = false;
+        this._sceneFrameDrawn = false;
     }
 
     destroy() {
@@ -1225,6 +1620,9 @@ class MinaLiquid {
         this.state = 'destroyed';
 
         this._cancelFrame();
+        // Stop video frame callbacks / RAF fallback / listeners, release an
+        // internally created <video>; user-provided elements are only untracked.
+        this._teardownVideo();
         for (const entry of this._listeners) {
             entry.target.removeEventListener(entry.type, entry.fn, entry.opts);
         }
@@ -1237,6 +1635,11 @@ class MinaLiquid {
         this._observedElements.clear();
 
         this._teardownGlObjects();
+        this._downscaleCanvas = null;   // temporary staging canvas
+        this._downscaleW = 0;
+        this._downscaleH = 0;
+        this._sourceToken = null;       // stale async image callbacks can never fire
+        this._setSceneState(SCENE_STATE_NONE);
         this._syncElementClasses();
         this._elements = [];
         this._sourceEl = null;
@@ -1253,8 +1656,25 @@ class MinaLiquid {
     getContext() { return this.gl; }
     getBackend() { return this.backend; }
     getQuality() { return this.quality; }
+    getSceneState() { return this.sceneState; }
     getElements() { return this._elements.slice(); }
-    getStats() { return Object.assign({}, this._stats, { scale: this._drawScale, elements: this._elements.length, state: this.state }); }
+    getStats() {
+        return Object.assign({}, this._stats, {
+            scale: this._drawScale,
+            elements: this._elements.length,
+            state: this.state,
+            scene: this.sceneState,
+            maxDispPx: this.maxRefractionPx
+        });
+    }
+
+    /* Live cap for refraction displacement (design px). Values are clamped to
+     * a sane range; pass 0..Infinity (<=0 keeps the minimum of 4px). */
+    setMaxRefractionPx(value) {
+        if (typeof value !== 'number' || !isFinite(value)) return;
+        this.maxRefractionPx = clampValue(Math.abs(value), 4, 512);
+        this.requestRender();
+    }
 
     refresh() {
         this._geometryDirty = true;
