@@ -44,13 +44,8 @@ console.log(JSON.stringify(p, null, 1));
 if (p.error) throw new Error("probe page error: " + p.error);
 
 /* ---- displacement profile (actual sampling displacement, px) ----
- * V3.2 lens+edge model: center is NON-ZERO (lens magnification, subtle),
- * mid (lens bulge plateau) > center, edge (bevel refraction) strongest.
- * NOTE: the lens (inward) to edge (outward) handover crosses zero once
- * inside the bevel — physically correct (magnify interior, compress rim).
- * For the showcase-sized big glass the crossing sits outside the measured
- * bands; small cards place it inside the rim band, so only the big glass
- * asserts strict band ordering while small/tiny assert measurability. */
+ * V3.3 lens+edge model: whole-interior warp (V2-grade), edge refraction
+ * at the rim, joint cap. The lens makes the glass visibly magnify. */
 for (const key of ["big", "small", "tiny"]) {
   const d = p.displacement[key];
   assert(d, `displacement profile for ${key} is missing`);
@@ -60,18 +55,33 @@ for (const key of ["big", "small", "tiny"]) {
     `${key}: maximum displacement must stay within the safe limit ${p.safeLimitPx}px (got ${d.max}px)`);
 }
 assert(p.displacement.big.center > 0.05,
-  `the big glass must show non-zero center displacement (lens magnification, got ${p.displacement.big.center}px)`);
-assert(p.displacement.big.mid > p.displacement.big.center + 0.2,
-  `mid (lens bulge) must exceed center (got mid=${p.displacement.big.mid}, center=${p.displacement.big.center})`);
-assert(p.displacement.big.edge >= p.displacement.big.mid,
-  `the big glass edge band must dominate the mid band (center=${p.displacement.big.center}, mid=${p.displacement.big.mid}, edge=${p.displacement.big.edge})`);
+  `the big glass must show non-zero center displacement (lens warp, got ${p.displacement.big.center}px)`);
+assert(p.displacement.big.mid > p.displacement.big.center,
+  `mid (lens warp band) must exceed center (got mid=${p.displacement.big.mid}, center=${p.displacement.big.center})`);
 assert(p.displacement.big.edge > 1.0,
-  `the big glass must show rim-focused refraction (edge=${p.displacement.big.edge})`);
+  `the big glass must show rim refraction (edge=${p.displacement.big.edge})`);
+assert(p.displacement.big.mid > 1.0,
+  `the mid-band warp must be clearly measurable (V2-grade lens, got ${p.displacement.big.mid}px)`);
 assert(p.displacement.small.edge > 0.3 || p.displacement.small.mid > 0.3,
   `small glass must refract measurably somewhere (mid=${p.displacement.small.mid}, edge=${p.displacement.small.edge})`);
-// tiny (64px) glasses sit below the 1px correlation sensitivity at default
-// settings: the physics is covered by the unit mirror; here only require
-// that the max displacement is non-negative and capped (already asserted).
+
+/* ---- lens magnification direction ----
+ * At symmetric interior points the sampling shift must point inward on both
+ * sides (sampled uv closer to the lens axis) = magnification, not a shift. */
+assert(p.lensDirection && p.lensDirection.inward === true,
+  `lens displacement must point inward on both sides (magnification; got ${JSON.stringify(p.lensDirection)})`);
+
+/* ---- scene mode alpha contract ---- */
+assert(p.alphaOwned.outside === 255,
+  `owned mode: alpha outside glass must be 255 (canvas owns the background, got ${p.alphaOwned.outside})`);
+assert(p.alphaOwned.inside === 255,
+  `owned mode: alpha inside glass must be 255 (got ${p.alphaOwned.inside})`);
+assert(p.alphaOverlay.outside === 0,
+  `overlay mode: alpha outside glass must be 0 (DOM shows through, got ${p.alphaOverlay.outside})`);
+assert(p.alphaOverlay.inside > 200,
+  `overlay mode: alpha inside glass must be near-opaque coverage (got ${p.alphaOverlay.inside})`);
+assert(p.displacementOverlay.edge >= 1.0,
+  `overlay mode must keep the full displacement pipeline (edge=${p.displacementOverlay.edge})`);
 
 /* ---- lens magnification direction ----
  * At symmetric interior points the sampling shift must point inward on both

@@ -19,18 +19,34 @@
  *                                field -> surface normal -> refraction,
  *                                dispersion, fresnel, specular, tint)
  *
- * Glass model: the surface is a rounded box with a circular-cap bevel on the
- * rim PLUS a weak shape-aware lens field over the interior (lensBulge).
- * The interior slightly magnifies the scene: displacement points inward and
- * is built from normalized rounded-rect coordinates (q = p / half) weighted
- * by SDF edge proximity — NOT the V2 "(uv - center) * scale" trick. Near the
- * rim the lens hands control to the edge bevel smoothly (handover mask), so
- * the profile reads as: center = subtle magnification, mid = lens bulge,
- * edge = strong refraction + fresnel + specular + blur. The COMBINED
- * displacement (lens + edge) is capped (uMaxDispPx / maxRefractionPx) so no
- * card size can produce extreme UV jumps, and blur ramps from a near-sharp
- * center to a slightly stronger rim (centerBlur), keeping background
- * information visible through the middle of the glass.
+ * Glass model (V3.3): a two-stage displacement field on the rounded-box SDF.
+ *
+ *   finalDisplacement = lensWarp + edgeRefraction
+ *
+ * - lensWarp acts on the WHOLE interior: it magnifies the background so
+ *   lines crossing the glass visibly shift and stretch (the V2 "gunyan"
+ *   charm, rebuilt on element-local coordinates q = p / half, edge
+ *   proximity and smooth easing — never the V2 (uv-center)*scale UV trick).
+ *   Warp strength grows toward the rim and fades inside the bevel via the
+ *   handover mask, so it connects continuously to edge refraction with no
+ *   reversal artifacts and no dead zero band.
+ * - edgeRefraction acts only in the rim bevel (circular-cap slope with
+ *   soft-knee saturation), pulling the outside background across the rim.
+ * - The COMBINED final vector is clamped: length(lensWarp + edgeRefraction)
+ *   <= maxRefractionPx (uMaxDispPx), resolution independent.
+ * - Blur is a light support effect: near-sharp center -> slightly stronger
+ *   rim (centerBlur trims the LOD in the interior). Liquid reads as a lens,
+ *   not as frost.
+ *
+ * Scene modes:
+ *   owned   — this canvas renders the full-viewport scene + glass. The
+ *             page behind is expected to be empty; out alpha = 1.
+ *   overlay — the browser keeps rendering the normal DOM/CSS background;
+ *             this canvas paints ONLY the glass regions. out alpha = 0
+ *             outside glass, coverage-alpha (SDF AA) inside, so DOM content
+ *             under/around the glass shows through untouched. The scene
+ *             source still cannot be arbitrary DOM: it is a renderer-owned
+ *             image/video/canvas/gradient/css-background/sceneProvider.
  *
  * Scene readiness: the GL-active class (.mina-liquid-gl) is only applied
  * after the scene has been uploaded to the GPU AND one full frame has been
@@ -67,26 +83,21 @@ const SCENE_STATE_LOADING = 'loading';
 const SCENE_STATE_READY = 'ready';
 const SCENE_STATE_FAILED = 'failed';
 
-/* Global glass appearance. "blur" is expressed in design px and mapped to a
- * blur-pyramid LOD; refraction is a fraction of the edge width; dispersion
- * offsets are relative to the refraction offset (kept tiny on purpose).
- *
- * Visual priority (V3.2): refraction/magnification first, blur and specular
- * second. The interior keeps a near-sharp sampled background (centerBlur
- * trims the LOD toward 0 at the middle) so the glass reads as a lens, not as
- * frosted blur. */
+/* Global glass appearance. V3.3 refraction-first ordering: lensWarp is the
+ * lead effect (Natural ~7% apparent magnification), edge refraction second,
+ * blur a light support (1-3px equivalent at the center band), specular and
+ * dispersion deliberately quiet. */
 const DEFAULT_GLASS = {
-    refraction: 0.32,
-    lensBulge: 0.017,
-    magnification: 0.025,
-    blur: 5,
+    refraction: 0.34,
+    lensWarp: 0.10,
+    blur: 2,
     fresnel: 0.16,
-    specular: 0.14,
+    specular: 0.12,
     dispersion: 0.02,
-    edgeBlur: 0.55,
-    centerBlur: 0.45,
-    edgeShadow: 0.22,
-    edgeWidth: 0.21,
+    edgeBlur: 0.5,
+    centerBlur: 0.6,
+    edgeShadow: 0.2,
+    edgeWidth: 0.2,
     tint: 0.05,
     tintColor: [1.0, 1.0, 1.0],
     saturation: 1.06,
@@ -175,7 +186,7 @@ void main() {
  * h(t) = 1 - sqrt(1 - t^2) (t = 0 center -> 1 rim) gives the surface slope;
  * refraction offsets grow with the slope.
  *
- * Lens field (V3.2): on top of the edge bevel, the interior carries a weak
+ * Lens warp (V3.3): on top of the edge bevel, the interior carries a V2-grade
  * magnifying lens. The lens offset is built from the NORMALIZED rounded-rect
  * coordinates q = p / half (so it follows the glass shape, not UV space)
  * scaled by an SDF-driven field: subtle at the center, handing control to
@@ -190,7 +201,8 @@ void main() {
  * subtle but non-zero, mid clearly larger, edge strongest, while
  * guaranteeing no extreme UV jump for any card size.
  */
-function buildCompositeShaderSource(mode) {
+function buildCompositeShaderSource(mode, sceneMode) {
+    const overlay = sceneMode === 'overlay';
     const perf = mode === 'perf';
     const full = mode === 'full';
     return `#version 300 es
@@ -209,8 +221,7 @@ uniform vec4 uRect[MAX_ELEMENTS];   // cx, cy (GL px), halfW, halfH
 uniform vec4 uShape[MAX_ELEMENTS];  // radiusPx, blurLod, refractionScale, tintStrength
 uniform vec3 uTintColor;
 uniform float uRefraction;
-uniform float uLensBulge;
-uniform float uMagnification;
+uniform float uLensWarp;
 uniform float uEdgeWidth;
 uniform float uFresnel;
 uniform float uSpecular;
@@ -291,24 +302,22 @@ void main() {
 
         vec2 gdir = sdRoundBoxGrad(p, half_, shape.x);
 
-        /* ---- lens field (shape-aware, NOT the V2 center-scale trick) ----
-         * q = p / half: normalized rounded-rect coordinates, each axis in
-         * [-1, 1]; radial = max(|q|) is the shape-aware rim proximity.
-         * A magnifying lens displaces LINEARLY with distance from the
-         * center (|D| ~ radial): that is what makes the background read
-         * as uniformly scaled-up, and what creates the visible interior/
-         * exterior offset when lines cross the glass boundary (the V2
-         * charm). Unlike V2 this field:
-         *   - follows the rounded-rect shape (q, not uv),
-         *   - fades to zero inside the edge bevel (handover = t^2),
-         *   - is capped jointly with the edge refraction below.
-         * inset = (1 - radial)^1.5 drives the center-sharp blur ramp. */
+        /* ---- Stage 1: lens warp (whole interior, V2-grade) ----
+         * q = p / half are element-local rounded-rect normalized
+         * coordinates (NOT viewport UV): the field follows the glass
+         * shape, unlike the V2 (uv - center) * scale trick.
+         * warp(r) = lensWarp * (0.4 + 0.6 * r^1.4) * (1 - handover):
+         * linear-in-p displacement |D| = warp * |p| over the interior =>
+         * uniform apparent magnification M = 1/(1-warp) (Natural 0.10 ->
+         * mid-band ~6.7%, Strong 0.20 -> ~14%, V2 ref 0.18 rim ~18%).
+         * handover = smoothstep(0.55, 1.0, t) fades the warp inside the
+         * rim bevel so edge refraction takes over continuously. */
         vec2 q = p / half_;
         float radial = max(abs(q.x), abs(q.y));
         float inset = pow(1.0 - clamp(radial, 0.0, 1.0), 1.5);
-        float handover = t * t;
-        float lensMag = (uMagnification + uLensBulge * radial) * shape.z;
-        vec2 lensBulgeOffset = -q * lensMag * (1.0 - handover) * min(half_.x, half_.y);
+        float handover = smoothstep(0.55, 1.0, t);
+        float warpAmt = uLensWarp * (0.4 + 0.6 * pow(clamp(radial, 0.0, 1.0), 1.4)) * (1.0 - handover) * shape.z;
+        vec2 lensWarpOffset = -p * warpAmt;
 
         /* ---- edge bevel refraction (rim only) ----
          * Circular-cap bevel with a smooth saturation near the rim.
@@ -326,15 +335,16 @@ void main() {
         vec2 edgeRefractionOffset = n2 * uRefraction * w * shape.z;
 
         /* ---- combined displacement + hard safety cap ----
-         * length(lensBulgeOffset + edgeRefractionOffset) <= uMaxDispPx is
+         * length(lensWarpOffset + edgeRefractionOffset) <= uMaxDispPx is
          * guaranteed for ANY parameter combination: the sum is capped
          * jointly, so neither term can push the total past the limit. */
-        vec2 refractPx = lensBulgeOffset + edgeRefractionOffset;
+        vec2 refractPx = lensWarpOffset + edgeRefractionOffset;
         float dispLen = length(refractPx);
         if (dispLen > uMaxDispPx && dispLen > 0.0) {
             refractPx *= uMaxDispPx / dispLen;
         }
         vec2 ruv = fragPx + refractPx;
+
 
         /* ---- blur profile: near-sharp center -> slightly stronger rim ----
          * The element base LOD is trimmed toward 0 across the interior
@@ -368,7 +378,7 @@ void main() {
         // lighting: fresnel rim + directional specular, both edge-weighted.
         // The lens adds a slight inward tilt to the interior normal so light
         // reads the surface as curved glass rather than a flat sheet.
-        vec2 lensTilt = -q * uLensBulge * 2.0;
+        vec2 lensTilt = -q * uLensWarp * 2.5;
         vec3 N = normalize(vec3(n2 * (1.0 - handover) + lensTilt * inset, 1.0));
         float fres = pow(1.0 - clamp(N.z, 0.0, 1.0), 3.0);
         vec3 L = normalize(vec3(-0.32, 0.5, 0.8));
@@ -386,8 +396,18 @@ void main() {
         color = mix(color, color * (1.0 - uEdgeShadow * 0.4), outer * (1.0 - cov));
     }
 
-    float alpha = uHasScene > 0.5 ? 1.0 : 0.0;
-    outColor = vec4(color * alpha, alpha);
+    float sceneAlpha = uHasScene > 0.5 ? 1.0 : 0.0;
+    ${overlay ? `
+    /* overlay mode: paint ONLY the glass regions. Outside glass and
+     * outside the contact-shadow halo alpha = 0 so the DOM/CSS
+     * background below the canvas stays visible. */
+    float covOut = owner >= 0 ? clamp(0.5 - bestSdf, 0.0, 1.0) : 0.0;
+    float haloOut = owner >= 0 ? (1.0 - clamp(bestSdf / 10.0, 0.0, 1.0)) * (1.0 - covOut) : 0.0;
+    float aOut = max(covOut, haloOut * 0.85) * sceneAlpha;
+    outColor = vec4(color * aOut, aOut);` : `
+    /* owned mode: the canvas IS the background; fully opaque when a
+     * scene is present. */
+    outColor = vec4(color * sceneAlpha, sceneAlpha);`}
 }`;
 }
 
@@ -407,6 +427,14 @@ class MinaLiquid {
                     ? document.documentElement.getAttribute('data-mina-performance')
                     : null)
         );
+
+        /* Scene mode:
+         *   'owned'   — this canvas renders the whole viewport background
+         *               (scene + glass). Default; matches V3.0-V3.2.
+         *   'overlay' — the browser keeps the DOM/CSS background; the
+         *               canvas paints ONLY glass regions (alpha = 0
+         *               outside). For pages whose real content is DOM. */
+        this.sceneMode = MinaLiquid.normalizeSceneMode(options.sceneMode);
 
         this.renderScale = clampValue(
             typeof options.renderScale === 'number' && isFinite(options.renderScale) ? options.renderScale : 1, 0.25, 4);
@@ -452,13 +480,17 @@ class MinaLiquid {
 
         this._sourceSpec = null;
         this._sourceEl = null;
-        this._sourceToken = null;          // guards stale async image callbacks
+        this._sourceToken = null;          // generation guard for ALL source types
         this._videoActive = false;
         this._ownsVideoEl = false;       // we created the <video>: destroy() must release it
         this._videoCleanup = null;        // { listeners, rafId, vrafId, rafActive }
         this._downscaleCanvas = null;     // reusable staging canvas for >2048px sources
         this._downscaleW = 0;
         this._downscaleH = 0;
+        this._providerCanvas = null;      // sceneProvider staging canvas
+        this._providerW = 0;
+        this._providerH = 0;
+        this._cssBgInfo = null;           // parsed css-background source info
         this.sceneState = SCENE_STATE_NONE;
 
         this._elements = [];
@@ -485,9 +517,14 @@ class MinaLiquid {
         }
 
         if (options.source) this.setSource(options.source);
+        else if (options.sceneProvider) this.setSource({ type: 'sceneProvider', provider: options.sceneProvider });
     }
 
     /* ---------------- static helpers ---------------- */
+
+    static normalizeSceneMode(value) {
+        return value === 'overlay' ? 'overlay' : 'owned';
+    }
 
     static normalizeQuality(value) {
         if (value === 'high' || value === 'quality') return 'high';
@@ -593,7 +630,7 @@ class MinaLiquid {
         const programs = {
             scene: this._createProgram(SCENE_SHADER_SOURCE),
             blur: this._createProgram(BLUR_SHADER_SOURCE),
-            composite: this._createProgram(buildCompositeShaderSource(QUALITY_CONFIG[this.quality].shaderMode))
+            composite: this._createProgram(buildCompositeShaderSource(QUALITY_CONFIG[this.quality].shaderMode, this.sceneMode))
         };
         const failedKey = Object.keys(programs).find((key) => !programs[key]);
         if (failedKey) {
@@ -855,6 +892,10 @@ class MinaLiquid {
             this._setupVideoTracking(video, spec);
         } else if (type === 'gradient') {
             this._adoptSourceElement(this._buildGradientCanvas(spec));
+        } else if (type === 'css-background') {
+            this._setupCssBackground(spec);
+        } else if (type === 'sceneProvider') {
+            this._setupSceneProvider(spec);
         } else if (type === 'canvas' || type === 'element') {
             if (!spec.el || (spec.el.width | 0) <= 0 || (spec.el.height | 0) <= 0) {
                 this._sceneFailed('invalid canvas element');
@@ -864,6 +905,193 @@ class MinaLiquid {
         } else {
             this._sceneFailed('unknown source type: ' + type);
         }
+    }
+
+    /* Explicitly re-upload / redraw the current scene. Use after the source
+     * content changed (dynamic canvas, sceneProvider data, css-background
+     * repaint). Dirty-driven: only marks the scene dirty; no per-frame
+     * unconditional upload happens unless this is called. */
+    invalidateScene() {
+        if (this.destroyed) return;
+        this._emptyDrawn = false;
+        this._sceneDirty = true;
+        this.requestRender();
+    }
+
+    /* ---- css-background source -----------------------------------
+     * Reads ONE simple background layer from getComputedStyle(target):
+     *   background-image: url(...)  (single url, no gradients)
+     *   background-size:   cover | contain | <len> <len>
+     *   background-position: <len> <len> | center | left/right/top/bottom
+     *   background-repeat: no-repeat (anything else -> unsupported)
+     * Complex backgrounds (multiple layers, gradients, repeat) are
+     * explicitly UNSUPPORTED and fail the scene cleanly — no silent
+     * mis-draw. WebGL still cannot capture arbitrary DOM; this only maps
+     * a CSS background image to the scene texture with matching geometry. */
+    _setupCssBackground(spec) {
+        const target = spec.target || (typeof document !== 'undefined' ? document.body : null);
+        if (!target || typeof getComputedStyle !== 'function') {
+            this._sceneFailed('css-background: no target / getComputedStyle');
+            return;
+        }
+        let cs;
+        try { cs = getComputedStyle(target); } catch (error) { cs = null; }
+        if (!cs) { this._sceneFailed('css-background: getComputedStyle failed'); return; }
+
+        const image = cs.backgroundImage || '';
+        const urls = image.match(/url\((['"]?)([^'")]+)\1\)/g) || [];
+        if (image.includes('gradient(') || urls.length !== 1) {
+            this._sceneFailed('css-background: only a single url() layer is supported (no gradients/multi-layer)');
+            return;
+        }
+        const src = urls[0].replace(/url\((['"]?)([^'")]+)\1\)/, '$2');
+        if (!src || src.startsWith('data:')) {
+            // data: URLs work too, but keep the parser simple: reject empty.
+            if (!src) { this._sceneFailed('css-background: empty url()'); return; }
+        }
+
+        const size = (cs.backgroundSize || 'auto').trim().toLowerCase();
+        const pos = (cs.backgroundPosition || '0% 0%').trim().toLowerCase();
+        const repeat = (cs.backgroundRepeat || 'repeat').trim().toLowerCase();
+        if (repeat !== 'no-repeat' && repeat !== 'no-repeat no-repeat') {
+            this._sceneFailed('css-background: only no-repeat is supported (got "' + repeat + '")');
+            return;
+        }
+
+        const px = (value, percentOf) => {
+            if (value.endsWith('px')) return parseFloat(value) || 0;
+            if (value.endsWith('%')) return (parseFloat(value) || 0) / 100 * percentOf;
+            return null;
+        };
+        const sizeParts = size.split(/\s+/);
+        let sizeInfo;
+        if (sizeParts[0] === 'cover') sizeInfo = { mode: 'cover' };
+        else if (sizeParts[0] === 'contain') sizeInfo = { mode: 'contain' };
+        else if (sizeParts.length >= 2) {
+            const w = px(sizeParts[0], 0), h = px(sizeParts[1], 0);
+            sizeInfo = (w !== null && h !== null) ? { mode: 'explicit', w, h } : null;
+        } else sizeInfo = null;
+        if (!sizeInfo) { this._sceneFailed('css-background: unsupported background-size "' + size + '"'); return; }
+
+        const posParts = pos.split(/\s+/);
+        const resolvePos = (value, axisSize, viewportSize) => {
+            if (value === 'center') return { kind: 'center' };
+            if (value === 'left' || value === 'top') return { kind: 'edge0' };
+            if (value === 'right' || value === 'bottom') return { kind: 'edge1' };
+            if (value.endsWith('%')) return { kind: 'percent', value: (parseFloat(value) || 0) / 100, axisSize, viewportSize };
+            if (value.endsWith('px')) return { kind: 'px', value: parseFloat(value) || 0, axisSize, viewportSize };
+            return null;
+        };
+        // For position we need the element box; capture at invalidate time.
+        let posInfo;
+        try {
+            const rect = target.getBoundingClientRect();
+            const width = rect.width || 0;
+            const height = rect.height || 0;
+            const posX = resolvePos(posParts[0] || '0%', 0, width);
+            const posY = resolvePos(posParts[1] || posParts[0] || '0%', 0, height);
+            // resolve keywords/percent to concrete px offsets (for explicit mode)
+            posInfo = { x: posX, y: posY, width, height, raw: pos };
+        } catch (error) {
+            posInfo = null;
+        }
+        if (!posInfo) { this._sceneFailed('css-background: cannot resolve background-position'); return; }
+
+        this._cssBgInfo = { target, src, sizeInfo, posInfo, repeat };
+
+        // Load the image (generation-guarded like any async source)
+        const token = this._sourceToken;
+        const self = this;
+        const img = typeof Image !== 'undefined' ? new Image() : null;
+        if (!img) { this._sceneFailed('css-background: no Image constructor'); return; }
+        img.crossOrigin = 'anonymous';
+        img.onload = function () {
+            if (self.destroyed || self._sourceToken !== token) return;
+            self._sourceEl = img;
+            self._sceneDirty = true;
+            self._emptyDrawn = false;
+            self.requestRender();
+        };
+        img.onerror = function () {
+            if (self.destroyed || self._sourceToken !== token) return;
+            console.error('MinaLiquid: css-background image failed:', src);
+            self._sceneFailed('css-background image load error');
+        };
+        if (img.src !== src) img.src = src;
+        this._sourceEl = img;   // provisional: uploaded once decoded
+        this._sceneDirty = true;
+        this.requestRender();
+    }
+
+    /* ---- sceneProvider source -----------------------------------
+     * The provider owns a canvas scene it can redraw at will. MinaLiquid:
+     *   - calls provider.render(ctx, state) whenever the scene is dirty
+     *     (never per frame unconditionally);
+     *   - exposes invalidateScene() for explicit redraws;
+     *   - passes viewport size, render scale, scroll position and time.
+     * This is a renderer-owned scene, NOT a DOM screenshot. Providers
+     * that throw fail the scene cleanly (elements keep the CSS surface,
+     * the DOM background is untouched). */
+    _setupSceneProvider(spec) {
+        const provider = spec.provider;
+        if (!provider || typeof provider.render !== 'function') {
+            this._sceneFailed('sceneProvider: provider.render(ctx, state) is required');
+            return;
+        }
+        this._providerRender = provider.render.bind(provider);
+        this._sourceSpec = Object.assign({ type: 'sceneProvider' }, spec);
+
+        // Provider canvas sized to the render buffer (recreated on resize)
+        if (typeof document === 'undefined' || !document.createElement) {
+            this._sceneFailed('sceneProvider: no document');
+            return;
+        }
+        this._ensureProviderCanvas();
+        this._sourceEl = this._providerCanvas;
+        this._drawProviderScene();
+        this._sceneDirty = true;
+        this._emptyDrawn = false;
+        this._setSceneState(SCENE_STATE_LOADING);
+        this.requestRender();
+    }
+
+    _ensureProviderCanvas() {
+        if (!this._providerCanvas) {
+            this._providerCanvas = document.createElement('canvas');
+        }
+        const w = Math.max(1, Math.round(this._bufferW));
+        const h = Math.max(1, Math.round(this._bufferH));
+        if (this._providerW !== w || this._providerH !== h) {
+            this._providerCanvas.width = w;
+            this._providerCanvas.height = h;
+            this._providerW = w;
+            this._providerH = h;
+            return true;   // resized -> caller should redraw
+        }
+        return false;
+    }
+
+    _drawProviderScene() {
+        if (!this._providerRender || !this._providerCanvas) return false;
+        const ctx = this._providerCanvas.getContext('2d');
+        if (!ctx) return false;
+        try {
+            this._providerRender(ctx, {
+                width: this._providerCanvas.width,
+                height: this._providerCanvas.height,
+                cssWidth: typeof window !== 'undefined' ? window.innerWidth : this._providerCanvas.width,
+                cssHeight: typeof window !== 'undefined' ? window.innerHeight : this._providerCanvas.height,
+                drawScale: this._drawScale,
+                scrollX: (typeof window !== 'undefined' && window.scrollX) || 0,
+                scrollY: (typeof window !== 'undefined' && window.scrollY) || 0,
+                time: typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
+            });
+        } catch (error) {
+            console.error('MinaLiquid: sceneProvider.render threw:', error && error.message);
+            this._sceneFailed('sceneProvider render error');
+            return false;
+        }
+        return true;
     }
 
     /* Mark the scene failed: stop tracking, drop the GPU scene, show the CSS
@@ -919,6 +1147,14 @@ class MinaLiquid {
      *   - loadedmetadata / loadeddata / canplay / playing / pause / seeked /
      *     ended each mark the scene dirty so a render always happens.
      * A paused/ended video never schedules continuous frames.
+     *
+     * Stale-callback isolation: every handler captures (generation,
+     * cleanup) at registration time and checks BOTH before touching any
+     * renderer state. A callback queued by video A that fires after
+     * setSource(video B) (or after teardown/destroy) can never mutate the
+     * new source's vrafId, sceneDirty, requestRender, videoActive or the
+     * scene state — it returns before doing anything, then clears only the
+     * captured (old) cleanup id.
      */
     _setupVideoTracking(video, spec) {
         this._sourceEl = video;
@@ -926,36 +1162,43 @@ class MinaLiquid {
         this._setSceneState(SCENE_STATE_LOADING);
 
         const self = this;
+        // captured per source-generation
+        const generation = this._sourceToken;
+        let cleanup = null;   // filled in below; handlers capture it
+
+        const isStale = function () {
+            return self.destroyed
+                || self._sourceToken !== generation
+                || self._videoCleanup !== cleanup;
+        };
         const markDirty = function () {
+            if (isStale()) return;
             self._sceneDirty = true;
             self._emptyDrawn = false;
             self.requestRender();
         };
-        const onReady = function () {
-            if (self.destroyed) return;
-            markDirty();
-        };
+        const onReady = markDirty;
         const onPlaying = function () {
-            if (self.destroyed) return;
+            if (isStale()) return;
             self._videoActive = true;
             markDirty();
             self._scheduleVideoFrame();   // rVFC path (no-op if unsupported)
             self._startVideoRaf();        // RAF fallback path (no-op if rVFC)
         };
         const onPause = function () {
-            if (self.destroyed) return;
+            if (isStale()) return;
             self._videoActive = false;
             markDirty();
             self._stopVideoFrames();
         };
         const onEnded = function () {
-            if (self.destroyed) return;
+            if (isStale()) return;
             self._videoActive = false;
             markDirty();
             self._stopVideoFrames();
         };
         const onLoadedData = function () {
-            if (self.destroyed) return;
+            if (isStale()) return;
             onReady();
             if (self._videoActive) {
                 self._scheduleVideoFrame();
@@ -983,10 +1226,11 @@ class MinaLiquid {
 
         if (supportsVrFc) {
             const onVideoFrame = function () {
-                // The callback id is consumed once fired; clear it first so a
-                // stale id can never block re-registration below.
-                if (self._videoCleanup) self._videoCleanup.setVrafId(0);
-                if (self.destroyed || !self._videoActive) return;
+                // The callback id is consumed once fired; clear it on the
+                // CAPTURED cleanup (never this._videoCleanup, which may
+                // already belong to a newer source).
+                cleanup.setVrafId(0);
+                if (isStale()) return;
                 self._sceneDirty = true;
                 self._emptyDrawn = false;
                 // Composite on the next display frame, then re-register.
@@ -997,7 +1241,7 @@ class MinaLiquid {
         } else {
             // RAF fallback: only while the video is actually playing.
             const rafTick = function () {
-                if (self.destroyed || !self._videoActive) { rafActive = false; rafId = 0; return; }
+                if (isStale() || !self._videoActive) { rafActive = false; rafId = 0; return; }
                 self._sceneDirty = true;
                 self.requestRender();
                 rafId = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(rafTick) : 0;
@@ -1006,9 +1250,10 @@ class MinaLiquid {
             this._videoRafTick = rafTick;
         }
 
-        this._videoCleanup = {
+        cleanup = {
             video,
             listeners,
+            generation,
             getVrafId: () => vrafId,
             setVrafId: (v) => { vrafId = v; },
             cancelVraf: () => {
@@ -1027,6 +1272,7 @@ class MinaLiquid {
             },
             isRafActive: () => rafActive
         };
+        this._videoCleanup = cleanup;
 
         this._sceneDirty = true;
         this.requestRender();
@@ -1149,11 +1395,32 @@ class MinaLiquid {
         this._rebuildPipeline();
     }
 
+    /* Switch between 'owned' (canvas owns the viewport background) and
+     * 'overlay' (transparent canvas, glass regions only). Rebuilds the
+     * composite program (alpha path differs) and forces a full clear +
+     * redraw so no pixels from the previous mode survive the switch. */
+    setSceneMode(mode) {
+        const next = MinaLiquid.normalizeSceneMode(mode);
+        if (next === this.sceneMode || this.destroyed) return;
+        this.sceneMode = next;
+        if (this.backend !== 'webgl') return;
+        const gl = this.gl;
+        this._rebuildPipeline();
+        // Mode switch must not leave stale opaque pixels on the canvas:
+        // clear immediately; the next composite paints the new mode.
+        if (gl) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, this._bufferW, this._bufferH);
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+        }
+    }
+
     _rebuildPipeline() {
         const gl = this.gl;
         if (!gl) return;
         if (this._programs.composite) gl.deleteProgram(this._programs.composite);
-        this._programs.composite = this._createProgram(buildCompositeShaderSource(QUALITY_CONFIG[this.quality].shaderMode));
+        this._programs.composite = this._createProgram(buildCompositeShaderSource(QUALITY_CONFIG[this.quality].shaderMode, this.sceneMode));
         if (!this._programs.composite) {
             this._switchBackend(MinaLiquid.supportsNativeBlur() ? 'native' : 'static');
             return;
@@ -1302,6 +1569,16 @@ class MinaLiquid {
         if (!gl) return;
         const cfg = QUALITY_CONFIG[this.quality];
         if (!this._ensureTargets()) return;
+
+        // sceneProvider: redraw into the provider canvas ONLY when the
+        // scene is dirty (this method only runs on dirty) — never every
+        // frame unconditionally.
+        if (this._sourceSpec && this._sourceSpec.type === 'sceneProvider') {
+            this._ensureProviderCanvas();
+            this._sourceEl = this._providerCanvas;
+            if (!this._drawProviderScene()) return;   // failed -> CSS surface
+        }
+
         if (cfg.pyramidLevels === 0) { this._uploadScene(); return; }
 
         this._uploadScene();
@@ -1384,8 +1661,7 @@ class MinaLiquid {
         if (u.uShape) gl.uniform4fv(u.uShape, this._shapeArray);
         if (u.uTintColor) gl.uniform3f(u.uTintColor, g.tintColor[0], g.tintColor[1], g.tintColor[2]);
         if (u.uRefraction) gl.uniform1f(u.uRefraction, g.refraction);
-        if (u.uLensBulge) gl.uniform1f(u.uLensBulge, g.lensBulge);
-        if (u.uMagnification) gl.uniform1f(u.uMagnification, g.magnification);
+        if (u.uLensWarp) gl.uniform1f(u.uLensWarp, g.lensWarp);
         if (u.uEdgeWidth) gl.uniform1f(u.uEdgeWidth, g.edgeWidth);
         if (u.uFresnel) gl.uniform1f(u.uFresnel, g.fresnel);
         if (u.uSpecular) gl.uniform1f(u.uSpecular, g.specular);
@@ -1748,7 +2024,12 @@ class MinaLiquid {
         this._downscaleCanvas = null;   // temporary staging canvas
         this._downscaleW = 0;
         this._downscaleH = 0;
-        this._sourceToken = null;       // stale async image callbacks can never fire
+        this._providerCanvas = null;    // sceneProvider staging canvas
+        this._providerW = 0;
+        this._providerH = 0;
+        this._providerRender = null;
+        this._cssBgInfo = null;
+        this._sourceToken = null;       // stale async callbacks can never fire
         this._setSceneState(SCENE_STATE_NONE);
         this._syncElementClasses();
         this._elements = [];
@@ -1774,6 +2055,7 @@ class MinaLiquid {
             elements: this._elements.length,
             state: this.state,
             scene: this.sceneState,
+            sceneMode: this.sceneMode,
             maxDispPx: this.maxRefractionPx
         });
     }

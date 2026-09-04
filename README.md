@@ -185,26 +185,38 @@ v0.3.0 から Liquid Glass は **MinaLiquid V3** — 描画原理から再設計
 
 | | CSS Frosted (`mina-glass` / `mina-liquid-native`) | WebGL Liquid (`mina-liquid` + MinaLiquid) |
 | :-- | :-- | :-- |
-| 背景 | **blur のみ** (geometry は変化しない) | **曲がる・僅かに拡大される** |
-| 中央 | 均一 blur | 近似シャープ + ~2-4% 倍率 |
+| 背景 | **blur のみ** (geometry は変化しない) | **曲がる・明確に拡大される** (lensWarp ~6.7%) |
+| 中央 | 均一 blur | 近似シャープ + lensWarp |
 | エッジ | なし | 強屈折 + Fresnel + specular |
 | 見え方 | すりガラス | 透明な厚みのあるレンズ |
 | 向き | 読みやすさ優先の下地 | 主役面の展示 |
 
+### Scene modes (owned / overlay)
+
+| | `owned` (既定) | `overlay` |
+| :-- | :-- | :-- |
+| 背景 | WebGL が Scene を全面描画 | **DOM/CSS 背景がそのまま**。canvas はガラス領域のみ |
+| 用途 | Hero / 動画背景 / グラデーション全面 | **実DOMコンテンツ (画像群など) の上のガラス** (vrc の Diamond gallery 上の sticky フィルター等) |
+
+どちらのモードでも屈折できるのは レンダラ管理の Scene (image / video / canvas / gradient / **css-background** / **sceneProvider**) のみです。**WebGL は任意の DOM を capture できません** (backdrop-filter と同じ、ではない)。
+
 ```js
 const liquid = new MinaLiquid({
   source: { type: "image", src: "/background.jpg" },
+  sceneMode: "owned",   // 'owned' = WebGL が背景全体を描画 | 'overlay' = DOM 背景の上にガラスだけ
   quality: "balanced",   // high | balanced | performance
-  maxRefractionPx: 40,   // 屈折変位 (lens + edge 合成) の安全上限
+  maxRefractionPx: 40,   // 屈折変位 (lensWarp + edge 合成) の安全上限
   glass: {
-    refraction: 0.32,    // エッジの屈折
-    magnification: 0.025, // 中央のレンズ倍率 (~2.5%)
-    lensBulge: 0.017,    // rim 方向へ成長するレンズ成分
-    blur: 5,            // 控えめな透過blur (中央はさらにシャープ)
+    lensWarp: 0.10,    // 主役: 内部レンズ倍率 (中間帯 ~6.7%, V2級の「ぐにゃん」)
+    refraction: 0.34,  // エッジの屈折
+    blur: 2,           // 軽い透過blur (背景情報を残す)
     dispersion: 0.02,   // 極小のRGB分散
     fresnel: 0.16        // 縁のリムライト
   }
 });
+// 動的背景 (vrc の Diamond gallery など):
+// new MinaLiquid({ sceneMode: 'overlay', sceneProvider: { render(ctx, state) {...} } })
+// 変更時: liquid.invalidateScene()
 ```
 
 DOM 側は geometry を渡すだけです:
@@ -218,12 +230,14 @@ DOM 側は geometry を渡すだけです:
 
 ### 動作の要点
 
-- **レンズ倍率が主役**: 中央はごく弱い倍率変化 (~2-4%)、エッジは強い屈折 + Fresnel。blur と specular は控えめで、背景が「曲がる・少し拡大される」ことでガラスの存在を主張する
-- **屈折の安全上限**: lens + edge の合成変位は `maxRefractionPx` (既定40px) で制限。どのカードサイズでも極端な伸びは起きない
-- **中央は近似シャープ**: `centerBlur` によりガラス中央の背景情報量を残す (すりガラス = CSS Frosted の役割)
+- **2つのシーンモード**: `owned` は WebGL が背景全体を描画。`overlay` は canvas がガラス領域だけを描き、外側は完全透明 — **普通の Web サイトの DOM/CSS 背景を勝手に置き換えない**
+- **lensWarp が主役**: ガラス内部で背景が ~6.7% (Strong ~14%) 拡大され、境界を跨ぐ直線が明確にズレる。Grid シーンで一目で分かる (旧 V2 の「ぐにゃん」を SDF・安全上限の上に再構築)
+- **屈折の安全上限**: lensWarp + edge の合成変位は `maxRefractionPx` (既定40px) で制限。どのカードサイズでも極端な伸びは起きない
+- **中央は近似シャープ**: `centerBlur` + `blur: 2` によりガラス中央の背景情報量を残す (すりガラス = CSS Frosted の役割)
+- **動的 Scene**: `sceneProvider.render(ctx, state)` + `invalidateScene()` で dirty-driven に背景を再描画 (vrc の Diamond gallery で実証)
 - **scene readiness**: Scene が GPU に upload され最初の1フレームが描けるまで `.mina-liquid-gl` は付与されない。それまでは CSS 表面で表示。source 切替時も即座に CSS 表面へ戻る
-- **source failure**: 画像ロード失敗 / CORS / tainted canvas / invalid canvas / 動画未準備でも透明・黒にならず CSS 表面へ fallback
-- **video lifecycle**: `requestVideoFrameCallback` 優先 (未対応環境のみRAF fallback・再生中のみ)。`destroy()` は内部生成 `<video>` だけ解放
+- **source failure**: 画像ロード失敗 / CORS / tainted canvas / invalid canvas / 動画未準備 / provider の throw でも透明・黒にならず CSS 表面へ fallback (DOM 背景は無傷)
+- **video lifecycle**: `requestVideoFrameCallback` 優先 (未対応環境のみRAF fallback・再生中のみ)。全 handler が generation token で stale 保護。`destroy()` は内部生成 `<video>` だけ解放
 - **blur pyramid**: Scene から 1/2, 1/4, 1/8 のぼかしレベルを事前生成。ピクセルごとの多段 tap はしない
 - **dirty rendering**: 常時RAFなし。scroll / resize / 要素変化時のみ1フレームにまとめて描画
 - **要素カリング**: viewport 外・`display:none`・0サイズの要素は処理しない。表示中の要素だけを uniform に渡す

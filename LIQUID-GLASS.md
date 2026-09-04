@@ -4,6 +4,29 @@ MinaUI v0.3.0 の Liquid Glass は、旧 MinaGlass (V2) を継ぎ足したもの
 
 ---
 
+## 0. V3.3 の2つのシーンモード (owned / overlay)
+
+Liquid Glass には、ページ構成に応じた **2つの sceneMode** があります:
+
+```js
+new MinaLiquid({ sceneMode: 'owned' /* 既定 */ , ... })
+new MinaLiquid({ sceneMode: 'overlay', ... })
+```
+
+| | `owned` (既定) | `overlay` |
+| :-- | :-- | :-- |
+| 背景 | **WebGL canvas が背景全体を所有** して描画 (Scene + Glass) | **ブラウザが通常の DOM/CSS 背景を描画**。canvas はガラス領域だけ |
+| canvas の外側 | 不透明 (alpha = 1) | **完全透明 (alpha = 0)** — DOM 背景は隠れない |
+| canvas の内側 | Scene を屈折描画 | Scene Texture を屈折して描画 (coverage alpha で AA) |
+| 用途 | Hero 背景 / 動画背景 / グラデーション全面 | **実DOMコンテンツの上に浮かぶガラス** (vrc の Diamond gallery 上の sticky フィルター等) |
+| z-index 契約 | `--mina-z-glass-canvas` が背景、コンテンツは上 | 屈折させたい要素は canvas **より下** (`z-index: -1` 等)、ガラス要素の中身は canvas **より上** |
+
+**WebGL は任意の DOM を capture できません。** どちらのモードでも屈折されるのは レンダラが管理する Scene (image / video / canvas / gradient / css-background / sceneProvider) だけです。overlay モードは「背景全体を WebGL に置き換えずに liquid を載せる」ための合成設計であり、DOM screenshot ではありません。
+
+モード切替は `setSceneMode()` または `sceneMode` オプションで。切替時は canvas を明示クリアし、前モードの不透明ピクセルが残らないことを保証します。
+
+---
+
 ## 1. 3つのサーフェスレベル
 
 | レベル | 名称 | 実装 | 用途 | 置いてよい数 |
@@ -30,10 +53,40 @@ MinaLiquid が参照できるのは、**レンダラ自身が管理する Scene*
 | :-- | :-- |
 | `image` | 画像URL (`{ type: "image", src: "/bg.jpg" }`) |
 | `video` | 動画 (`{ type: "video", src: "/bg.mp4" }` または `el`) |
-| `canvas` | 2D canvas 要素 (`{ type: "canvas", el: canvasEl }`) |
+| `canvas` | 2D canvas 要素 (`{ type: "canvas", el: canvasEl }`) — 動的更新は `invalidateScene()` |
 | `gradient` | レンダラ内蔵のグラデーション生成 (`stops`, `angle`) |
+| `css-background` | 対象要素の **単一 url() 背景** を cover/center/no-repeat のみで解釈して Texture 化 (`{ type: "css-background", target: document.body }`)。複数レイヤー・グラデーション・repeat は明示的に unsupported として scene failed にする (誤描画しない) |
+| `sceneProvider` | 動的な Scene を描く `{ render(ctx, state) }` (下記) |
 
 DOM を capture しているわけでは**ありません**。Liquid Glass の背後に置くのは、この Scene を描画した WebGL キャンバス(またはCSS側で同じ画像を敷いた背景)である必要があります。
+
+#### Scene Provider API (動的な Scene)
+
+背景がスクロールやデータ変更で動的に変わるページ (vrc の Diamond gallery など) は、**sceneProvider** で Scene を供給します:
+
+```js
+new MinaLiquid({
+  sceneMode: 'overlay',
+  sceneProvider: {
+    render(ctx, state) {
+      // ctx: 2D context of a viewport-sized staging canvas
+      // state: { width, height, cssWidth, cssHeight, drawScale,
+      //          scrollX, scrollY, time }
+      drawMyDynamicBackground(ctx, state);
+    }
+  }
+});
+```
+
+- Provider 側が canvas へ Scene を描き、MinaLiquid がそれを Texture として利用します (**renderer-owned scene**。任意の DOM capture ではありません)
+- 再描画は **dirty-driven**: `invalidateScene()` を呼ぶと次のフレームで一度だけ `render()` が走る。毎フレーム無条件実行はしない
+- Provider が throw した場合は scene failed として CSS 表面に fallback (DOM 側は何も壊れない)
+
+```js
+liquid.invalidateScene();   // scroll / resize / filter 変更などのタイミングで
+```
+
+canvas source (`type: 'canvas'`) も同じ `invalidateScene()` で再 upload できます (毎フレーム upload はしない)。
 
 ### Scene loading state と readiness
 
@@ -107,70 +160,90 @@ Pass 3: Composite       — 各要素の Rounded-rect SDF から
 
 ## 4. Glass Model (Shader)
 
-ガラス表面は「Rounded Rectangle + 円形キャップ状のベベル + 内部の弱いレンズ場」でモデル化します。
+ガラス表面の変位は **2段階の独立したステージ** でモデル化されます:
+
+```text
+finalDisplacement = lensWarp + edgeRefraction   (合成後の合計を cap)
+```
 
 - **SDF**: rounded box の符号付き距離場で要素を特定
 - **edge proximity**: `t = 0` (中央) → `t = 1` (縁) の正規化距離
-- **Lens field (V3.2)**: 正規化 rounded-rect 座標 `q = p / half` から作られる **magnification / lens bulge**。V2 の `(uv - center) * scale` とは異なり、SDF・要素形状に追従し、ハンドオーバー `t²` でエッジ屈折に自然に主役を譲る
-- **normal**: SDF の解析的勾配 × ベベル勾配 `t / sqrt(1 - t²)` (smooth saturation) + 内部レンズ傾き
-- **屈折**: `refractedUV = uv + (lensBulgeOffset + edgeRefractionOffset)` — **中央はごく弱い倍率、エッジは強屈折**
-- **safety limit**: **合成変位 (lens + edge) 全体** が `maxRefractionPx` (既定 40 design px) で clamp
+- **Stage 1 — lensWarp (V3.3)**: ガラス内部**全体**に作用する拡大レンズ場。要素ローカル座標 `q = p / half` から
 
-つまり:
+  ```text
+  warp(r) = lensWarp × (0.4 + 0.6 × r^1.4) × (1 − handover)
+  |D| = warp × |p|   (線形 → 均一な見かけ倍率 M = 1/(1 − warp))
+  ```
+
+  V2 の `(uv − center) × scale` とは異なり、**要素形状に追従するローカル座標**で構築され、`handover = smoothstep(0.55, 1, t)` でベベル内のエッジ屈折へ滑らかに主役を譲ります (方向の反転もゼロ帯もなし)。
+- **Stage 2 — edgeRefraction**: リムベベルのみ。SDF 解析勾配 × 円形キャップ勾配 `t / sqrt(1−t²)` (soft-knee 飽和)
+- **normal**: ベベル勾配 + 内部レンズ傾き (湾曲ガラスとして光が当たる)
+- **safety limit**: **合成変位 `length(lensWarp + edgeRefraction)` 全体** が `maxRefractionPx` (既定 40 design px) を超えない
+
+倍率の目安 (実測は visual validation を参照):
+
+| preset | `lensWarp` | 中間帯の見かけ倍率 | rim 寄り |
+| :-- | :-- | :-- | :-- |
+| Soft | 0.05 | ~3.4% | ~5.5% |
+| **Natural (既定)** | **0.10** | **~6.7%** | **~11%** |
+| Strong | 0.20 | ~14% | ~22% |
+| V2 Reference | 0.18 | rim で最大 ~18% 相当 | ~18% |
 
 ```text
-中心   → ごく弱い倍率変化 (背景が僅かに拡大される — これが「レンズがある」感覚)
-中間   → lens bulge プラトー (倍率 ~2-4%)
-エッジ → 強い屈折 + Fresnel + specular + ぼかし増加 + 色分散
+中心   → 僅かな倍率 (対称中心は 0 だが周囲は直ぐに効く)
+中間   → lensWarp プラトー (Grid の線が明確に広がる)
+エッジ → handover を経て 強屈折 + Fresnel + specular + ぼかし増加 + 色分散
 ```
 
 ### なぜこの見た目が Liquid Glass に見えるのか
 
 人間が「透明な厚みのあるガラス」を認識する手がかりは blur ではなく **背景の歪み** です:
 
-1. **背景が少し拡大される** — 中央倍率 ~2-4% は、線や輪郭がガラス内で僅かに間隔を変えるため「そこにレンズがある」と知覚される (V3.1 は中央完全フラットだったため blur card に見えた)
-2. **エッジで背景が曲がる** — エッジ屈折は外側の背景を引き込むため、境界を跨ぐ直線が明確に折れ曲がる
-3. **方向性のあるハイライト** — 全周均一の白縁ではなく、左上光源の specular/Fresnel のみ
+1. **背景が明確に少し拡大される** — 中間帯 ~6.7% の倍率は、Grid の線の間隔がガラス内で目に見えて広がるため「そこに厚いレンズがある」と知覚される (V3.1 の中央完全フラット + V3.2 の ~3% は弱すぎた)
+2. **境界を跨ぐ直線が位置ズレする** — lensWarp によりガラス内の線は外側と連続しない
+3. **エッジで背景が曲がる** — エッジ屈折は外側の背景を引き込むため、境界で直線が明確に折れる
+4. **方向性のあるハイライト** — 全周均一の白縁ではなく、左上光源の specular/Fresnel のみ
 
-V2 の「ぐにゃん」は UV を中心基準で拡大するだけの粗い表現でしたが、その知覚的な強み (倍率差で存在を主張する) は V3.2 では SDF・ハンドオーバー・安全上限の上に再構築されています。
+旧 V2 の「ぐにゃん」の主要因は最大18%級の UV lens scaling でした。V3.3 は同じ知覚的強度を、SDF・要素形状追従・ハンドオーバー・合成変位 cap の上に再構築しています。V2 への単純回帰 (UV 空間での一括 scale) は禁止で、実際コード上も存在しません。
 
-### Lens field と Edge refraction の違い
+### lensWarp と edgeRefraction の違い
 
-| | Lens field (内部) | Edge refraction (エッジ) |
+| | lensWarp (内部) | edgeRefraction (エッジ) |
 | :-- | :-- | :-- |
-| 領域 | 中央〜中間 (ベベル外側) | ベベル内 (edgeWidth) |
+| 領域 | ガラス全体 (中央〜中間) | ベベル内 (edgeWidth) のみ |
 | 方向 | 内向き (中心へ) — **拡大** | 外向き — **引き込み/圧縮** |
-| 強さ | `magnification` + `lensBulge` (線形に成長) | `refraction` × ベベル勾配 (エッジで急増) |
-| 役割 | 「レンズがそこにある」倍率差 | 境界の視覚的切断・湾曲 |
+| 強さ | `lensWarp` × イージング (線形に成長) | `refraction` × ベベル勾配 (エッジで急増) |
+| 役割 | 「レンズがそこにある」倍率差・線の広がり | 境界の視覚的切断・湾曲 |
 
-ハンドオーバー `t²` により、両者はベベル内で交差しながら滑らかに繋がります (内→外の変位が一度ゼロを跨ぐ S 字カーブ。物理的に正しい)。
+ハンドオーバー `smoothstep(0.55, 1, t)` により、両者はベベル内で交差しながら滑らかに繋がります (方向が滑らかに反転する S 字カーブ。物理的に正しい)。
 
 ### Refraction safety (合成変位の上限)
 
-circular-cap bevel の傾き `t/sqrt(1-t²)` は `t → 1` で発散するため、そのまま使うとカードサイズ次第で背景が極端に伸びます。V3.2 は次の安全策を持ちます:
+circular-cap bevel の傾き `t/sqrt(1-t²)` は `t → 1` で発散するため、そのまま使うとカードサイズ次第で背景が極端に伸びます。V3.3 は次の安全策を持ちます:
 
 1. **smooth saturation**: 傾きを soft-knee で滑らかに飽和
-2. **joint px cap**: **`length(lensBulgeOffset + edgeRefractionOffset) <= maxRefractionPx`** — lens と edge の合計が上限を超えることはパラメータ如何を問わず起きない
+2. **joint px cap**: **`length(lensWarp + edgeRefraction) <= maxRefractionPx`** — 2つのステージの合計が上限を超えることはパラメータ如何を問わず起きない
 
 ```js
 new MinaLiquid({ ..., maxRefractionPx: 40 });   // 既定 40 (4..512 に clamp)
 liquid.setMaxRefractionPx(24);                 // 実行時変更も可能
 ```
 
-**どんなカードサイズ・パラメータでも極端な UV ジャンプは起きません** (visual validation で実測検証)。
+**どんなカードサイズ・パラメータでも極端な UV ジャンプは起きません** (visual validation で実測検証: max 22px at cap 40)。
 
 ### Chromatic Aberration
 
 RGB dispersion は**エッジ近傍のみ**、屈折オフセットの数 % だけ R/B を逆方向にずらします。既定値 `dispersion: 0.02` はゲーミングエフェクトにならないよう意図的に極小です。`performance` 品質では無効、`balanced` では 60% 減衰します。
 
-### Blur profile (V3.2: center-sharp)
+### Blur profile (refraction-first)
 
-blur は一様ではなく、中央ほど弱くエッジほどやや強いプロファイルを持ちます:
+blur は主役ではなく補助です。中央ほど弱くエッジほどやや強いプロファイルを持ちます:
 
 ```text
 lod = blurLod * (1 - centerBlur * inset) + edgeBlur * t²
 ```
 
+- 既定 `blur: 2` (1〜3px 相当) — Liquid は「透明だが光路が曲がっている背景」
 - 中央 (`inset ≈ 1`): LOD は `blur * (1 - centerBlur)` まで下がる — **背景の情報量を残す** (すりガラスにしない)
 - エッジ (`t → 1`): `edgeBlur` 分が追加され、わずかに強い
 
@@ -178,39 +251,39 @@ lod = blurLod * (1 - centerBlur * inset) + edgeBlur * t²
 
 | | CSS Frosted (`mina-liquid-native`) | WebGL Liquid (`mina-liquid-gl`) |
 | :-- | :-- | :-- |
-| 背景 | blur のみ (geometry 変化なし) | **曲がる・僅かに拡大される** |
+| 背景 | blur のみ (geometry 変化なし) | **曲がる・明確に拡大される** |
 | エッジ | なし | 強屈折 + Fresnel |
-| 中央 | 均一 blur | 近似シャープ + 弱倍率 |
+| 中央 | 均一 blur | 近似シャープ + lensWarp |
 | 役割 | 読みやすさ優先の下地 | 主役面の展示 |
 
-### 推奨既定値 (V3.2)
+### 推奨既定値 (V3.3)
 
 | parameter | 既定 | 意図 |
 | :-- | :-- | :-- |
-| `refraction` | `0.32` | エッジ屈折。一目でガラスと分かる強さ |
-| `magnification` | `0.025` | 中央の等倍率成分 (~2.5%) |
-| `lensBulge` | `0.017` | rim 方向へ成長するレンズ成分 (合成 ~2-4%) |
-| `blur` | `5` | 背景情報を残す弱めの透過 blur |
-| `centerBlur` | `0.45` | 中央の LOD 減衰率 (すりガラス化防止) |
+| `lensWarp` | `0.10` | **主役**。中間帯 ~6.7% / rim ~11% の見かけ倍率 |
+| `refraction` | `0.34` | エッジ屈折 |
+| `blur` | `2` | 背景情報を残す軽い透過 blur (1〜3px 相当) |
+| `centerBlur` | `0.6` | 中央の LOD 減衰率 (すりガラス化防止) |
 | `fresnel` | `0.16` | リムライトが白飛びしない強度 |
-| `specular` | `0.14` | ハイライトが白い玉にならない強度 |
+| `specular` | `0.12` | ハイライトが白い玉にならない強度 |
 | `dispersion` | `0.02` | ほぼ知覚不可の色縁 |
-| `edgeWidth` | `0.21` | ベベル幅 (短辺比) |
-| `edgeBlur` | `0.55` | エッジへの blur 増加 |
+| `edgeWidth` | `0.2` | ベベル幅 (短辺比) |
+| `edgeBlur` | `0.5` | エッジへの blur 増加 |
 | `maxRefractionPx` | `40` | 合成変位の安全上限 (design px) |
 
-**強すぎる distortion を避ける理由**: `refraction` やレンズ値を上げすぎると、ガラスではなく「水滴 / 魚眼レンズ / ワープエフェクト」に見えます。MinaUI は UI ライブラリであり、訴求点は「透明な厚みのある上質なガラス」です。Strong preset (refraction 0.42) が実用上限と考えてください。
+**強すぎる distortion を避ける理由**: `lensWarp` を 0.3 を超えて上げると、ガラスではなく「水滴 / 魚眼レンズ / ワープエフェクト」に見えます。MinaUI は UI ライブラリであり、訴求点は「透明な厚みのある上質なガラス」です。Strong preset (lensWarp 0.20 / 中間 ~14%) が実用上限、V2 Reference preset (0.30 相当) は比較用の限界値と考えてください。
 
-### Recommended presets (Demo の Natural / Soft / Strong / Performance)
+### Recommended presets (Demo の Natural / Soft / Strong / Performance / V2)
 
 Demo (`demo/index.html`) の preset ボタンは上記思想をそのまま反映しています:
 
 - **Natural** (推奨既定値と同一) — 「開いた瞬間にこれが MinaLiquid と分かる」展示状態
-- **Soft** — 控えめ。テキスト多い面向け
-- **Strong** — 実用上限。それでも極端な warp はしない
+- **Soft** — 控えめ。テキスト多い面向け (~3-5%)
+- **Strong** — 実用上限。V2 の「ぐにゃん」に近い魅力 (~12-16%)
 - **Performance** — 低負荷向け (mip-only + dispersion 0)
+- **V2 Reference** — 旧 V2 相当の強い warp での一時比較用 (maxRefractionPx 60)
 
-調整はスライダーで行い、気に入った値を `glass` オプションとして渡してください。
+調整はスライダー (lensWarp / refraction / edgeWidth / blur / fresnel / specular / dispersion / maxRefractionPx) と Lens Warp OFF / Edge Refraction OFF / Blur OFF トグルで行えます。
 
 ---
 
@@ -275,37 +348,41 @@ const liquid = new MinaLiquid({
     type: "image",
     src: "/background.jpg"
   },
+  sceneMode: "owned",           // 'owned' (既定) | 'overlay'
   quality: "balanced",          // high | balanced | performance
   backend: "auto",              // auto | webgl | native | static
   renderScale: 1,               // devicePixelRatio への係数
   maxPixelCount: 1920 * 1080,   // バックバッファ上限
   maxElements: 8,               // 同時追跡する liquid 要素数 (最大16)
-  maxRefractionPx: 40,          // 屈折変位 (lens + edge 合成) の安全上限
+  maxRefractionPx: 40,          // 屈折変位 (lensWarp + edge 合成) の安全上限
   glass: {
-    refraction: 0.32,           // エッジの屈折量
-    magnification: 0.025,       // 中央の等倍率レンズ成分
-    lensBulge: 0.017,           // rim 方向へ成長するレンズ成分
-    blur: 5,                    // 透過blur (design px → LOD)
-    centerBlur: 0.45,           // 中央の blur 減衰 (背景情報を残す)
+    lensWarp: 0.10,            // 主役: 内部レンズ倍率 (中間帯 ~6.7%)
+    refraction: 0.34,          // 縁の屈折量
+    blur: 2,                   // 透過blur (design px → LOD)。軽く
+    centerBlur: 0.6,           // 中央の blur 減衰 (背景情報を残す)
     fresnel: 0.16,              // 縁の Fresnel リムライト
-    specular: 0.14,             // 縁の指向性ハイライト
+    specular: 0.12,             // 縁の指向性ハイライト
     dispersion: 0.02,           // RGB分散 (ごく僅かに)
-    edgeBlur: 0.55,             // 縁に向かう blur 増加
-    edgeShadow: 0.22,           // 縁のコンタクトシャドウ
-    edgeWidth: 0.21,            // ベベル幅 (短辺比)
+    edgeBlur: 0.5,              // 縁に向かう blur 増加
+    edgeShadow: 0.2,           // 縁のコンタクトシャドウ
+    edgeWidth: 0.2,            // ベベル幅 (短辺比)
     tint: 0.05,
     tintColor: [1, 1, 1],
     saturation: 1.06,
     brightness: 1.0
   }
 });
+// sceneProvider 版 (動的背景):
+// new MinaLiquid({ sceneMode: 'overlay', sceneProvider: { render(ctx, state) {...} } })
 ```
 
 ### メソッド
 
 | API | 説明 |
 | :-- | :-- |
-| `setSource(spec)` | Scene を差し替え (image / video / canvas / gradient) |
+| `setSource(spec)` | Scene を差し替え (image / video / canvas / gradient / css-background / sceneProvider) |
+| `invalidateScene()` | 現在の Scene を明示的に再描画・再 upload (dirty-driven。dynamic canvas / sceneProvider 用) |
+| `setSceneMode(mode)` | `owned` ⇄ `overlay` を実行時切替 (canvas をクリアしてから再描画) |
 | `setGlass(partial)` | glass パラメータを部分更新 |
 | `setQuality(q)` | quality を切替 (pipeline 再構築) |
 | `setMaxRefractionPx(v)` | 屈折変位の安全上限を実行時変更 (design px) |
@@ -392,7 +469,7 @@ CSS カスタムプロパティとの連携: 角丸は通常 `border-radius` の
 同じ Scene (coordinate-coded: 64px 周期の triangle wave + per-column noise) ・同じ glass geometry で:
 
 ```text
-Baseline: refraction = lensBulge = magnification = 0
+Baseline: lensWarp = refraction = dispersion = fresnel = specular = 0
 Test:     通常の glass 設定
 ```
 
@@ -400,10 +477,12 @@ Test:     通常の glass 設定
 
 ### 検証項目
 
-- **center displacement > 0** (lens magnification が存在すること — 中央が完全フラットなら失格)
-- **mid (lens bulge) > center** / **edge (edge refraction) が最大** (帯順序)
+- **center displacement > 0** (lens warp が存在すること — 中央が完全フラットなら失格)
+- **mid (lens warp band) > center** / **edge (edge refraction) > 1px** (帯別の存在)
 - **lens direction**: 対称点の変位が両側とも内向き (= 拡大レンズ) であること
 - maximum displacement ≤ safe limit (`maxRefractionPx` × renderScale)
+- **owned mode**: canvas 外側 alpha = 255 (背景所有)
+- **overlay mode**: canvas 外側 alpha = 0 (DOM が透ける) / ガラス内 alpha > 0 / 変位 pipeline 維持
 - white clipping (中央・エッジの白飛び率)
 - RGB dispersion 強度 (R と B の sampling shift 差)
 - background restoration after DOM move (移動後の旧領域が元の Scene に戻る)
@@ -412,15 +491,17 @@ Test:     通常の glass 設定
 - context lost → frosted → restored (再 earn まで GL class なし)
 - destroy (GL class 除去)
 
-### Magnification の実測 (V3.2)
+### Lens warp 強度の実測 (V3.3)
 
-Grid scene (35px 間隔の縦線) に対する実測では、glass 内部の線間隔が **+3.4%** 広がることが確認されています:
+Grid scene (35px 間隔の縦線) に対する実測 (相関 shift):
 
 ```text
-outside: 73.5px spacing / inside: 76px spacing / ratio = 1.034
+Natural (lensWarp 0.10): mid-band ~8.5px 変位 (中間帯 ~6.7% の見かけ倍率)
+Strong  (lensWarp 0.20): ~12px
+V2 ref  (lensWarp 0.30): ~15px
 ```
 
-これは「単なる色差」ではなく **feature spacing から検出したレンズ倍率** であり、Human eye が「レンズがある」と知覚する根拠と同じものです。
+公式 visual validation の mid-band 実測: center 2.15px / mid 5.67px / edge 5.5px / max 22px (cap 40px 内)。これは「単なる色差」ではなく **feature spacing から検出したレンズ倍率** であり、人間が「レンズがある」と知覚する根拠と同じものです。
 
 実行には `python -m http.server 4173` 相当のローカルサーバーと Chrome が必要です。
 
@@ -432,10 +513,34 @@ outside: 73.5px spacing / inside: 76px spacing / ratio = 1.034
 | ガラス面が半透明のまま | Scene がまだ `ready` になっていません (loading / failed)。`getSceneState()` で確認してください |
 | ガラスに何も見えない | liquid 要素が viewport 外 / display:none / 0サイズの可能性。`getStats().elements` で確認 |
 | 画像が出ない | CORS (`crossOrigin="anonymous"` 対応サーバー) を確認。 tainted canvas は upload に失敗し CSS 表面に fallback します |
-| 歪みが強すぎる | `glass.refraction` を下げる、`maxRefractionPx` を絞る、または要素に `data-mina-refraction="0.6"` |
+| 歪みが強すぎる | `glass.lensWarp` / `glass.refraction` を下げる、`maxRefractionPx` を絞る、または要素に `data-mina-refraction="0.6"` |
+| overlay でガラス背景が真っ暗 | sceneProvider / css-background が失敗しています。`getSceneState()` が `failed` の時は要素だけ CSS 表面に落ち、DOM 背景は影響を受けません |
+| 動的背景が更新されない | `invalidateScene()` を呼んでください (dirty-driven)。scroll listener から呼ぶのが典型 |
 | 色ズレが気になる | `glass.dispersion: 0` |
 | performance モードでぼやけすぎ | mip-only の仕様です。`balanced` 以上で pyramid blur になります |
 | 動画が最初のフレームから動かない | autoplay が block されている可能性。ユーザー操作後に `video.play()` してください。metadata 遅延には対応済みです |
+
+---
+
+## 11.5 vrc.ossmxun.net — Diamond gallery ユースケース
+
+overlay モード + sceneProvider の代表実装が vrc.ossmxun.net の Memories ページです:
+
+```text
+DOM Diamond 画像 (z-index: -1)
+        ↓ 実DOMとしてブラウザが描画
+WebGL overlay canvas (z-index: 0) ← この層だけが liquid
+        ↓
+sticky 日付 filterBar (z-index: 20) の中身
+```
+
+- **layout 共有**: `planDiamondLayout(areaWidth, photoCount)` という純粋関数が唯一のレイアウト源。DOM collage (`renderCollage`) と Scene renderer (`DiamondScene.drawScene`) が**同じ placements** を消費するため、DOM と canvas で位置がズレる構造自体が存在しない
+- **ダイヤモンド clip**: CSS `clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%)` と同じ path を canvas で再現
+- **object-fit: cover**: CSS と同じ `max(w/iw, h/ih)` の cover 計算
+- **scroll 同期**: sceneProvider の state で `scrollY` を受け取り、collage の document-space 位置 (`docTop − scrollY`) で viewport 描画。scroll listener から `invalidateScene()` を呼ぶだけで sticky filterBar の真後ろが常に正確
+- **filter 変更**: `selectFilter` → `renderCollage` → `setLayout` (同 plan を scene へ配布) → `invalidateScene()`
+- **画像はデコード 1 回**: `imgCache` (Map) に保持し、provider の再描画では draw のみ (毎フレーム decode なし)
+- **画像キャッシュの遅延読み込み**: 未ロードの画像は該当タイルをスキップし、非同期でキャッシュに追加した上で次の invalidate で拾われる
 
 ---
 

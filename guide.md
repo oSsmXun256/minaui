@@ -110,9 +110,10 @@ MinaLiquid は **レンダラ自身が管理する Scene (image / video / canvas
 
 WebGLを使う液体ガラスは `.mina-liquid` / `[data-mina-liquid]` を要素に付け、`minaui.glass.js` を読み込んで `new MinaLiquid({...})` を呼びます。Liquid Glass は Hero / Showcase 向けのオプション機能で、標準面ではありません。
 
-- MinaLiquid はレンダラが管理する Scene (image / video / canvas / gradient) を屈折させます。**DOM を capture しているわけではありません。**
-- V3.2 からガラス内部に弱い**レンズ場** (magnification ~2-4%) があり、背景が僅かに拡大されて見えます。エッジでは屈折・Fresnel が強くなります。blur は控えめで中央ほどシャープ (背景情報を残す)。屈折変位 (lens + edge 合成) は `maxRefractionPx` (既定40px) で安全に制限されます。
-- CSS Frosted (blur のみ・geometry 変化なし) と WebGL Liquid (背景が曲がる・拡大される) は明確に役割が分かれます。主役面には Liquid、下地には Frosted を使ってください。
+- MinaLiquid はレンダラが管理する Scene (image / video / canvas / gradient / css-background / sceneProvider) を屈折させます。**DOM を capture しているわけではありません。**
+- V3.3 は2つのシーンモードを持ちます。**owned** は WebGL が背景全体を描画。**overlay** は canvas がガラス領域だけを描き、外側は完全透明 — 普通の Web サイトの DOM 背景はそのまま生きます (vrc の Diamond gallery 上の sticky フィルターが代表例)。
+- **lensWarp が主役**: ガラス内部で背景が ~6.7% (Strong ~14%) 拡大され、Grid の線が明確に広がり、境界を跨ぐ直線がズレます。エッジでは屈折・Fresnel が強くなります。blur は 1-3px 程度の補助です。屈折変位 (lensWarp + edge 合成) は `maxRefractionPx` (既定40px) で安全に制限されます。
+- 動的な背景は `sceneProvider.render(ctx, state)` で描き、`invalidateScene()` で dirty-driven に再描画します (毎フレーム無条件実行なし)。
 - Scene が GPU に upload され最初の1フレームが描けるまで要素は CSS 表面のままです (`.mina-liquid-gl` は scene ready 後のみ)。source 切替時も即座に CSS 表面へ戻ります。画像ロード失敗・CORS・tainted canvas でも透明・黒にはならず CSS 表面へ fallback します。
 - 動画 source は `requestVideoFrameCallback` で新しいフレームが来た時だけ更新されます (未対応環境のみRAF fallback・再生中のみ)。`destroy()` が解放するのは内部生成 `<video>` だけです。
 - Safari / iOS では `auto` がCSS backdrop-filterの `native` backendを選び、固定キャンバスの座標追跡が非同期スクロールでずれる問題を回避します。

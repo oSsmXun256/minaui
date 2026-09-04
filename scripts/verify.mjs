@@ -33,19 +33,61 @@ const requiredCss = [
 const missing = requiredCss.filter((selector) => !css.includes(selector));
 if (missing.length) throw new Error(`Missing required CSS API: ${missing.join(", ")}`);
 
+/* Balance counter with a small string-aware lexer: skips // and /* */
+/* comments, '...' "..." `...` literals (with ${} interpolation keeping
+ * its inner braces OUT of the count, since they are template code, and
+ * nested template literals are handled recursively). Real syntactic
+ * validity is separately proven by `new Script(...)` below. */
 function countBraces(text) {
-  let clean = text.replace(/\/\*[\s\S]*?\*\//g, "");
-  clean = clean.replace(/(['"])(?:\\.|(?!\1)[^\\])*\1/g, "");
-  return [...clean].reduce((depth, char) => {
-    if (char === "{") return depth + 1;
-    if (char === "}") return depth - 1;
-    return depth;
-  }, 0);
+  let depth = 0;
+  let i = 0;
+  const n = text.length;
+  const skipString = (quote) => {
+    i++;   // opening quote
+    while (i < n) {
+      if (text[i] === "\\") { i += 2; continue; }
+      if (quote === "`" && text[i] === "$" && text[i + 1] === "{") {
+        // template interpolation: recursively count the CODE inside ${...}
+        i += 2;
+        let inner = 0;
+        while (i < n && inner >= 0) {
+          if (text[i] === "{") inner++;
+          else if (text[i] === "}") inner--;
+          else if (text[i] === "'" || text[i] === '"' || text[i] === "`") {
+            skipString(text[i]);
+            continue;
+          }
+          i++;
+        }
+        i++;   // past closing }
+        continue;
+      }
+      if (text[i] === quote) { i++; return; }
+      i++;
+    }
+  };
+  while (i < n) {
+    const ch = text[i];
+    if (ch === "/" && text[i + 1] === "/") { while (i < n && text[i] !== "\n") i++; continue; }
+    if (ch === "/" && text[i + 1] === "*") { i += 2; while (i < n && !(text[i] === "*" && text[i + 1] === "/")) i++; i += 2; continue; }
+    if (ch === "'" || ch === '"' || ch === "`") { skipString(ch); continue; }
+    if (ch === "{") depth++;
+    if (ch === "}") depth--;
+    i++;
+  }
+  return depth;
 }
 if (countBraces(css) !== 0) throw new Error("CSS braces are unbalanced");
 if (countBraces(js) !== 0) throw new Error("JS braces are unbalanced");
 if (countBraces(compat) !== 0) throw new Error("Aqua compatibility CSS braces are unbalanced");
-if (countBraces(glass) !== 0) throw new Error("MinaLiquid JS braces are unbalanced");
+// MinaLiquid uses nested template literals (GLSL sources with ${} code) and
+// regex literals that a lexical counter cannot fully untangle; its syntactic
+// validity is instead proven by the strict parse below (throws on error).
+try {
+  new Script(glass, { filename: glassPath });
+} catch (error) {
+  throw new Error(`MinaLiquid JS parse failed: ${error.message}`);
+}
 
 const requiredCompat = [".aqua-glass", ".aqua-btn", ".aqua-container", ".aqua-fade-in", ".aqua-duration-1000", "--aqua-primary"];
 const missingCompat = requiredCompat.filter((selector) => !compat.includes(selector));
@@ -209,6 +251,7 @@ function createFakeGL({ failProgramKeys = [], failTextures = 0, failFramebuffers
     LINEAR: 0x2601, LINEAR_MIPMAP_LINEAR: 0x2703, CLAMP_TO_EDGE: 0x812F,
     TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803, UNPACK_FLIP_Y_WEBGL: 0x9240,
     ACTIVE_UNIFORMS: 0x8B86, FRAMEBUFFER_COMPLETE: 0x8CD5, NO_ERROR: 0,
+    COLOR_BUFFER_BIT: 0x4000,
     // call log
     calls,
     drawCounts: () => calls.filter((c) => c[0] === "drawArrays").length,
@@ -223,7 +266,7 @@ function createFakeGL({ failProgramKeys = [], failTextures = 0, failFramebuffers
       const f = { id: ++fboCounter, complete: true }; framebuffers.push(f); return f;
     },
     deleteFramebuffer(f) { calls.push(["deleteFramebuffer", f && f.id]); },
-    createProgram() { const p = { id: ++programCounter, uniforms: { uScene: "uScene", uB0: "uB0", uB1: "uB1", uB2: "uB2", uTex: "uTex", uDir: "uDir", uImgRes: "uImgRes", uOutRes: "uOutRes", uResolution: "uResolution", uCount: "uCount", uRect: "uRect", uShape: "uShape", uTintColor: "uTintColor", uRefraction: "uRefraction", uLensBulge: "uLensBulge", uMagnification: "uMagnification", uEdgeWidth: "uEdgeWidth", uFresnel: "uFresnel", uSpecular: "uSpecular", uDispersion: "uDispersion", uEdgeBlur: "uEdgeBlur", uCenterBlur: "uCenterBlur", uEdgeShadow: "uEdgeShadow", uSaturation: "uSaturation", uBrightness: "uBrightness", uTint: "uTint", uHasScene: "uHasScene", uMaxDispPx: "uMaxDispPx" }, uniformValues: {} }; programs.push(p); return p; },
+    createProgram() { const p = { id: ++programCounter, uniforms: { uScene: "uScene", uB0: "uB0", uB1: "uB1", uB2: "uB2", uTex: "uTex", uDir: "uDir", uImgRes: "uImgRes", uOutRes: "uOutRes", uResolution: "uResolution", uCount: "uCount", uRect: "uRect", uShape: "uShape", uTintColor: "uTintColor", uRefraction: "uRefraction", uLensWarp: "uLensWarp", uEdgeWidth: "uEdgeWidth", uFresnel: "uFresnel", uSpecular: "uSpecular", uDispersion: "uDispersion", uEdgeBlur: "uEdgeBlur", uCenterBlur: "uCenterBlur", uEdgeShadow: "uEdgeShadow", uSaturation: "uSaturation", uBrightness: "uBrightness", uTint: "uTint", uHasScene: "uHasScene", uMaxDispPx: "uMaxDispPx" }, uniformValues: {} }; programs.push(p); return p; },
     deleteProgram(p) { calls.push(["deleteProgram", p && p.id]); },
     createShader() { return {}; },
     deleteShader() {},
@@ -267,6 +310,7 @@ function createFakeGL({ failProgramKeys = [], failTextures = 0, failFramebuffers
       // Only element uploads fail (tainted canvas sim); FBO texture
       // allocations (source === null) must keep working.
       const src = args[args.length - 1];
+      calls.push(["texImage2D", src === null || src === undefined ? "alloc" : "upload"]);
       if (uploadError > 0 && src !== null && src !== undefined) {
         if (uploadError !== Infinity) uploadError--;
         throw new Error("SECURITY_ERR: tainted canvas");
@@ -290,6 +334,8 @@ function createFakeGL({ failProgramKeys = [], failTextures = 0, failFramebuffers
     bufferData() {},
     bindVertexArray() {},
     drawArrays(mode, first, count) { calls.push(["drawArrays", count]); },
+    clearColor(r, g, b, a) { gl._clearColor = [r, g, b, a]; },
+    clear(mask) { calls.push(["clear", mask]); },
     isContextLost() { return false; },
     _boundTexture: null,
     _setProgramMarker(p, marker) { p._marker = marker; },
@@ -1054,109 +1100,129 @@ async function testContextLostRestoreCycle() {
   liquid.destroy();
 }
 
-/** Refraction displacement profile (JS mirror of the shader math):
- * center small but NON-ZERO (lens magnification), growing monotonically
- * through the interior plateau, edge strongest, combined (lens + edge)
- * displacement always capped by maxDispPx. */
+/** Displacement field profile (JS mirror of the V3.3 shader math):
+ * lensWarp over the whole interior (V2-grade strength), edge refraction at
+ * the rim, joint cap on the sum. Verifies strength ordering, continuity,
+ * inward direction and the safety cap. */
 async function testDisplacementProfile() {
   const { DEFAULT_GLASS } = loadGlass();
   const maxDispPx = 40;
   const edgeWidth = DEFAULT_GLASS.edgeWidth;
   const refraction = DEFAULT_GLASS.refraction;
-  const lensBulge = DEFAULT_GLASS.lensBulge;
-  const magnification = DEFAULT_GLASS.magnification;
+  const lensWarp = DEFAULT_GLASS.lensWarp;
 
-  /** Mirrors buildCompositeShaderSource: q-based lens field (linear-in-p
-   * magnification + radial bulge, fading via handover t^2) + bevel slope
-   * with soft knee + the joint px clamp. halfW/halfH in px, p in px. */
-  const displacement = (px, py, halfW, halfH, scale = 1, maxPx = maxDispPx) => {
+  /** Mirrors buildCompositeShaderSource: element-local q, eased warp,
+   * smoothstep handover, bevel slope with soft knee, joint clamp. */
+  const displacement = (px, py, halfW, halfH, maxPx = maxDispPx, warp = lensWarp, refr = refraction) => {
     const halfMin = Math.min(halfW, halfH);
     const w = Math.min(Math.max(edgeWidth * halfMin, 8), 56);
     const qx = Math.abs(px) / halfW, qy = Math.abs(py) / halfH;
     const radial = Math.max(qx, qy);
-    const dOut = (1 - radial) * halfMin;      // >0 inside, 0 at rim
+    const dOut = (1 - radial) * halfMin;
     const t = Math.min(1, Math.max(0, 1 - dOut / w));
-    const handover = t * t;
-    const lensMag = magnification + lensBulge * radial;
-    const lensX = -(px / halfW) * lensMag * (1 - handover) * halfMin;
-    const lensY = -(py / halfH) * lensMag * (1 - handover) * halfMin;
-    // bevel slope with soft knee
+    const ho0 = Math.max(0, Math.min(1, (t - 0.55) / 0.45));
+    const handover = ho0 * ho0 * (3 - 2 * ho0);   // smoothstep(0.55, 1, t)
+    const ease = 0.4 + 0.6 * Math.pow(Math.min(1, radial), 1.4);
+    const warpAmt = warp * ease * (1 - handover);
+    // D = warpAmt * p per axis (linear-in-p displacement; q only drives easing)
+    const lensX = -px * warpAmt;
+    const lensY = -py * warpAmt;
     const tc = Math.min(t, 0.98);
     const denom = Math.sqrt(Math.max(1 - tc * tc, 0.04));
     let slope = tc / denom;
     const knee = Math.max(0, Math.min(1, (slope - 0.8) / 0.2));
-    const smoothKnee = knee * knee * (3 - 2 * knee);
-    slope = slope + (5 - slope) * smoothKnee * 0.85;
+    const sk = knee * knee * (3 - 2 * knee);
+    slope = slope + (5 - slope) * sk * 0.85;
     const gdx = Math.sign(px) || 1, gdy = Math.sign(py) || 1;
-    const edgeX = gdx * slope * refraction * w;
-    const edgeY = gdy * slope * refraction * w;
-    // combined + joint clamp
-    let dx = (lensX + edgeX) * scale, dy = (lensY + edgeY) * scale;
+    const edgeX = gdx * slope * refr * w;
+    const edgeY = gdy * slope * refr * w;
+    let dx = lensX + edgeX, dy = lensY + edgeY;
     const len = Math.hypot(dx, dy);
     if (len > maxPx) { dx *= maxPx / len; dy *= maxPx / len; }
-    return Math.hypot(dx, dy);
+    return { x: dx, y: dy, len: Math.hypot(dx, dy), lensX, edgeX, t };
   };
 
-  // Profile on a 400x260 card. "center" samples the visual center band
-  // (small offset from the exact mid — the exact center point of a
-  // symmetric lens is necessarily 0 by symmetry; what reads as "center
-  // magnification" is the displacement across the central region).
+  // ---- V2-grade strength: Natural lensWarp must produce a CLEAR warp ----
   const halfW = 200, halfH = 130;
-  const center = displacement(16, 0, halfW, halfH);
-  const quarter = displacement(halfW * 0.25, 0, halfW, halfH);
-  const mid = displacement(halfW * 0.5, 0, halfW, halfH);
-  const midHigh = displacement(halfW * 0.7, 0, halfW, halfH);
-  const edge = displacement(halfW - 2, 0, halfW, halfH);
+  const dMid = displacement(100, 0, halfW, halfH);       // mid-band (radial .5)
+  const dQuarter = displacement(50, 0, halfW, halfH);
+  const dCenter = displacement(16, 0, halfW, halfH);
 
-  // center band: NOT zero anymore (lens magnification), but subtle
-  assert(center > 0.01, `center-band displacement must be non-zero (lens magnification), got ${center}`);
-  assert(center < 3.5, `center-band displacement must stay subtle, got ${center}`);
-  assert(quarter < mid, 'displacement must grow monotonically (quarter < mid)');
-  assert(mid < midHigh, 'displacement must grow monotonically (mid < midHigh)');
-  assert(midHigh < edge, 'displacement must grow monotonically (midHigh < edge)');
-  assert(center < mid && mid < edge, 'center < mid < edge must hold');
-  assert(mid < 10, 'mid displacement must stay reasonable (design px)');
-  assert(edge <= maxDispPx, 'edge displacement must respect the px cap');
+  // Natural apparent magnification mid-band
+  const easeMid = 0.4 + 0.6 * Math.pow(0.5, 1.4);
+  const magFactor = 1 / (1 - lensWarp * easeMid);
+  assert(magFactor >= 1.05 && magFactor <= 1.10,
+    `Natural magnification factor must be ~5-10% (got ${(magFactor * 100 - 100).toFixed(1)}%, lensWarp=${lensWarp})`);
 
-  // Perpendicular axis (y) also lens-refracts (shape-aware q, not V2 center-scale)
-  const centerY = displacement(0, halfH * 0.5, halfW, halfH);
-  assert(centerY > 0.01, 'y-axis must also show lens displacement');
+  // Displacement at mid must be a meaningful fraction of the interior size
+  assert(dMid.lensX < -5, `mid-band warp displacement must be clearly visible (got ${(-dMid.lensX).toFixed(2)}px on a 400px card)`);
+  assert(Math.abs(dQuarter.lensX) < Math.abs(dMid.lensX), 'warp must grow toward the rim (quarter < mid)');
+  assert(dCenter.lensX < 0 && Math.abs(dCenter.lensX) < Math.abs(dMid.lensX), 'center band must warp less than mid');
 
-  // Any card size (tiny to huge) stays capped and positive
+  // ---- Edge refraction dominates at the rim ----
+  const dEdge = displacement(198, 0, halfW, halfH);
+  assert(Math.abs(dEdge.x) > Math.abs(dMid.len), 'edge displacement must exceed the mid warp');
+  assert(dEdge.len <= maxDispPx + 1e-9, 'edge must respect the px cap');
+
+  // ---- Continuity: lens direction must not flip inside the interior ----
+  let lastSign = null, flips = 0;
+  for (let px = 4; px < 199; px += 2) {
+    const r = displacement(px, 0, halfW, halfH);
+    const s = Math.sign(r.lensX);
+    if (lastSign !== null && s !== 0 && lastSign !== 0 && s !== lastSign) flips++;
+    if (s !== 0) lastSign = s;
+  }
+  assert(flips === 0, `lens warp direction must not flip inside the interior (got ${flips} flips)`);
+
+  // ---- Preset strength ordering: Soft < Natural < Strong ~ V2-grade ----
+  const SOFT = 0.05, NATURAL = DEFAULT_GLASS.lensWarp, STRONG = 0.20, V2REF = 0.18;
+  const warpAt = (warp) => Math.abs(displacement(140, 0, halfW, halfH, 40, warp).lensX);
+  const softD = warpAt(SOFT), natD = warpAt(NATURAL), strongD = warpAt(STRONG), v2D = warpAt(V2REF);
+  assert(softD < natD, `Soft (${softD.toFixed(1)}px) must be weaker than Natural (${natD.toFixed(1)}px)`);
+  assert(natD < strongD, `Natural (${natD.toFixed(1)}px) must be weaker than Strong (${strongD.toFixed(1)}px)`);
+  assert(strongD >= v2D * 0.6, `Strong (${strongD.toFixed(1)}px) must reach V2-grade presence (V2 ref ${v2D.toFixed(1)}px)`);
+
+  // ---- Any card size: capped, positive ----
   for (const [hw, hh] of [[10, 10], [50, 50], [200, 130], [500, 500], [2000, 2000]]) {
     const d = displacement(hw - 2, 0, hw, hh);
-    assert(d <= maxDispPx + 1e-9, `edge displacement must be capped for half=${hw}`);
-    assert(d > 0, `edge displacement must stay positive for half=${hw}`);
-    const c = displacement(Math.min(8, hw * 0.1), 0, hw, hh);
-    assert(c > 0 && c < 4, `center-band must be subtle but non-zero for half=${hw} (got ${c})`);
+    assert(d.len <= maxDispPx + 1e-9, `edge displacement must be capped for half=${hw}`);
+    assert(d.len > 0, `edge displacement must stay positive for half=${hw}`);
   }
 
-  // Extreme parameters: even with huge lens/refraction, combined stays capped
-  const extreme = displacement(1990, 0, 2000, 2000, 1, 40);
-  assert(extreme <= 40 + 1e-9, `combined lens+edge must respect the cap under extreme values (got ${extreme})`);
+  // ---- Extreme parameters: joint cap on the SUM ----
+  const extreme = displacement(1990, 0, 2000, 2000, 40, 0.9, 0.9);
+  assert(extreme.len <= 40 + 1e-9, `combined lens+edge must respect the cap under extreme values (got ${extreme.len})`);
 }
 
-/** Lens magnification: sampling offset points INWARD (toward the glass
- * center) at the middle, so the sampled coordinate is closer to the lens
- * axis than the pixel => apparent magnification. Verify sign + magnitude. */
+/** Lens warp direction + magnification factor: inward sampling on both
+ * halves, apparent magnification in the required band, mirror symmetry. */
 async function testMagnificationProfile() {
   const { DEFAULT_GLASS } = loadGlass();
-  const { lensBulge, magnification } = DEFAULT_GLASS;
+  const { lensWarp } = DEFAULT_GLASS;
 
-  // x-component of the lens offset at a mid point on the right half
-  const halfW = 200, halfMin = 130, px = 60;
+  const halfW = 200, halfH = 130, px = 100;
   const radial = Math.abs(px) / halfW;
-  const lensX = -(px / halfW) * (magnification + lensBulge * radial) * halfMin;
-  // Inward => lensX < 0 for px > 0 (sampling left of the pixel = magnify)
-  assert(lensX < 0, 'lens offset must point inward (negative for +x pixels)');
-  // The sampled uv (frag + offset) is closer to the center:
-  assert(Math.abs(px + lensX) < px, 'lens must sample closer to the glass axis (magnification)');
-  // Left side mirrors (sampling right of the pixel)
-  const lensX2 = -((-px) / halfW) * (magnification + lensBulge * radial) * halfMin;
-  assert(lensX2 > 0, 'lens offset must flip sign on the opposite half');
-  // Magnification factor is in the "slight but visible" range (~2-4%)
-  const factor = 1 / (1 - (magnification + lensBulge) * halfMin / halfW);
-  assert(factor > 1.01 && factor < 1.06, `magnification factor must be subtle-visible, got ${factor.toFixed(3)}`);
+  const ease = 0.4 + 0.6 * Math.pow(radial, 1.4);
+  const warpAmt = lensWarp * ease;   // mid-card: handover ~ 0
+  const lensX = -px * warpAmt;
+  assert(lensX < 0, 'warp must point inward (negative for +x pixels)');
+  assert(Math.abs(px + lensX) < px, 'warp must sample closer to the glass axis (magnification)');
+  const lensX2 = -(-px) * warpAmt;
+  assert(lensX2 > 0, 'warp must flip sign on the opposite half (mirror)');
+  assert(Math.abs(lensX + lensX2) < 1e-9, 'warp must be mirror-symmetric (equal magnitude)');
+
+  // y-axis shares the field (shape-aware, not UV-space)
+  const py = 65;
+  const warpAmtY = lensWarp * (0.4 + 0.6 * Math.pow(py / halfH, 1.4));
+  const lensY = -py * warpAmtY;
+  assert(lensY < 0, 'y-axis must also warp inward');
+
+  // Natural default in the 5-9.5% band; Strong (demo preset) 12-16%
+  const factorAt = (warp) => 1 / (1 - warp * (0.4 + 0.6 * Math.pow(0.7, 1.4)));
+  const nat = factorAt(lensWarp);
+  assert(nat >= 1.05 && nat <= 1.095, `Natural magnification must sit in 5-9.5% (got ${(nat * 100 - 100).toFixed(1)}%)`);
+  const strong = factorAt(0.20);
+  assert(strong >= 1.12 && strong <= 1.19, `Strong magnification must sit in 12-19% (got ${(strong * 100 - 100).toFixed(1)}%)`);
 }
 
 /** The rVFC handler must re-register itself after every fired frame; a stale
@@ -1269,24 +1335,32 @@ async function testVideoSchedulingAcrossContextLoss() {
   liquid.destroy();
 }
 
-/** Lens bulge shader contract: uniforms exist, the combined displacement
- * formula (lens + edge) and the joint px cap are present in the GLSL. */
+/** Lens warp shader contract: uniforms exist, the two-stage displacement
+ * (lensWarp + edgeRefraction), the joint px cap, the handover mask and the
+ * scene-mode alpha paths are present in the GLSL. */
 async function testLensBulgeShaderContract() {
   const source = await readFile(glassPath, "utf8");
   for (const needle of [
-    "uniform float uLensBulge;",
-    "uniform float uMagnification;",
+    "uniform float uLensWarp;",
     "uniform float uCenterBlur;",
-    "lensBulgeOffset",
+    "lensWarpOffset",
     "edgeRefractionOffset",
-    "refractPx = lensBulgeOffset + edgeRefractionOffset",
+    "refractPx = lensWarpOffset + edgeRefractionOffset",
     "inset",
     "handover",
-    "uMagnification + uLensBulge * radial",
-    "uCenterBlur * inset"
+    "0.4 + 0.6 * pow(clamp(radial, 0.0, 1.0), 1.4)",
+    "uCenterBlur * inset",
+    "smoothstep(0.55, 1.0, t)"
   ]) {
     assert(source.includes(needle), `composite shader must contain "${needle}"`);
   }
+  // scene-mode alpha contracts
+  assert(source.includes("float aOut = max(covOut, haloOut * 0.85) * sceneAlpha;"),
+    "overlay mode must emit coverage-based alpha (glass only)");
+  assert(source.includes("outColor = vec4(color * aOut, aOut);"),
+    "overlay mode must premultiply the color by coverage alpha");
+  assert(source.includes("outColor = vec4(color * sceneAlpha, sceneAlpha);"),
+    "owned mode must stay opaque outside the glass");
   // The V2 regression (plain center-scale) must NOT come back — check code
   // only (strip comments so documentation mentions don't trip the contract).
   const codeOnly = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
@@ -1304,16 +1378,13 @@ async function testLensUniformUpload() {
   const { fakeGL, rafQueue, MinaLiquid } = bootGlassWithGL(build);
   const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' } });
   drainRaf(rafQueue, 3);
-  const lensU = fakeGL.calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uLensBulge');
-  const magU = fakeGL.calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uMagnification');
+  const lensU = fakeGL.calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uLensWarp');
   const cbU = fakeGL.calls.filter((c) => c[0] === 'uniform1f' && c[1] === 'uCenterBlur');
-  assert(lensU.length > 0, 'uLensBulge must be uploaded');
-  assert(magU.length > 0, 'uMagnification must be uploaded');
+  assert(lensU.length > 0, 'uLensWarp must be uploaded');
   assert(cbU.length > 0, 'uCenterBlur must be uploaded');
   // Values follow the DEFAULT_GLASS lens parameters
   const { DEFAULT_GLASS } = loadGlass();
-  assert(lensU.every((c) => c[2] === DEFAULT_GLASS.lensBulge), 'uLensBulge value must match DEFAULT_GLASS');
-  assert(magU.every((c) => c[2] === DEFAULT_GLASS.magnification), 'uMagnification value must match DEFAULT_GLASS');
+  assert(lensU.every((c) => c[2] === DEFAULT_GLASS.lensWarp), 'uLensWarp value must match DEFAULT_GLASS');
   liquid.destroy();
 }
 
@@ -1447,16 +1518,261 @@ async function testStaleCallbackDuringSourceSwitch() {
 async function testFrostedVsLiquidDifference() {
   const { DEFAULT_GLASS } = loadGlass();
   assert(DEFAULT_GLASS.refraction > 0.2, 'Liquid default refraction must be clearly active');
-  assert(DEFAULT_GLASS.lensBulge + DEFAULT_GLASS.magnification >= 0.03,
-    'Liquid default must include a combined lens bulge + magnification >= 0.03');
-  assert(DEFAULT_GLASS.blur <= 6, 'Liquid default blur must stay light (frosted look is the CSS fallback)');
+  assert(DEFAULT_GLASS.lensWarp >= 0.05,
+    `Liquid default must carry a V2-grade lensWarp (>= 0.05, got ${DEFAULT_GLASS.lensWarp})`);
+  assert(DEFAULT_GLASS.blur <= 3, `Liquid default blur must stay light 1-3px (got ${DEFAULT_GLASS.blur})`);
   assert(DEFAULT_GLASS.specular <= 0.2, 'Liquid default specular must not dominate the refraction');
-  // The liquid look = refraction-first ordering: displacement exists at mid
-  // (lens) even where blur is minimal — verified numerically in the profile
-  // test; here we assert the priority ordering of the defaults themselves.
-  const priority = [DEFAULT_GLASS.refraction, DEFAULT_GLASS.lensBulge, DEFAULT_GLASS.fresnel, DEFAULT_GLASS.specular, DEFAULT_GLASS.dispersion];
+  const priority = [DEFAULT_GLASS.refraction, DEFAULT_GLASS.lensWarp, DEFAULT_GLASS.fresnel, DEFAULT_GLASS.specular, DEFAULT_GLASS.dispersion];
   assert(priority[0] > priority[2] && priority[0] > priority[3] && priority[0] > priority[4],
     'refraction must dominate lighting parameters in the defaults');
+}
+
+/* ===================== V3.3 scene-mode / source tests ===================== */
+
+/** sceneMode normalization + shader selection per mode. */
+async function testSceneModeShaderSelection() {
+  const { MinaLiquid } = loadGlass();
+  assert(MinaLiquid.normalizeSceneMode('overlay') === 'overlay', 'overlay must normalize');
+  assert(MinaLiquid.normalizeSceneMode('owned') === 'owned', 'owned must normalize');
+  assert(MinaLiquid.normalizeSceneMode(undefined) === 'owned', 'default must be owned');
+  assert(MinaLiquid.normalizeSceneMode('bogus') === 'owned', 'invalid must fall back to owned');
+
+  const source = await readFile(glassPath, "utf8");
+  // The shader generator receives sceneMode and emits distinct alpha paths.
+  assert(source.includes("buildCompositeShaderSource(mode, sceneMode)"),
+    'buildCompositeShaderSource must accept a sceneMode parameter');
+  assert(source.includes("const overlay = sceneMode === 'overlay';"),
+    'the generator must branch on overlay mode');
+}
+
+/** setSceneMode switches the live renderer and clears stale pixels. */
+async function testSceneModeSwitch() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { fakeGL, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'gradient' }, sceneMode: 'owned' });
+  drainRaf(rafQueue, 3);
+  assert(liquid.sceneMode === 'owned', 'precondition: starts owned');
+  assert(liquid.getStats().sceneMode === 'owned', 'stats must expose sceneMode');
+
+  const drawsBefore = liquid.getStats().draws;
+  liquid.setSceneMode('overlay');
+  assert(liquid.sceneMode === 'overlay', 'setSceneMode must switch the mode');
+  // the switch must clear the backbuffer (no stale owned-mode pixels)
+  const clears = fakeGL.calls.filter((c) => c[0] === 'clear');
+  assert(clears.length > 0, 'setSceneMode must clear the canvas (stale pixels)');
+  drainRaf(rafQueue, 3);
+  assert(liquid.getStats().draws > drawsBefore, 'mode switch must force a redraw');
+
+  // idempotence: same mode = no-op
+  const before2 = fakeGL.calls.length;
+  liquid.setSceneMode('overlay');
+  assert(fakeGL.calls.length === before2, 'same-mode setSceneMode must be a no-op');
+
+  // back to owned also clears
+  liquid.setSceneMode('owned');
+  assert(fakeGL.calls.filter((c) => c[0] === 'clear').length >= 2, 'second switch must clear again');
+  liquid.destroy();
+}
+
+/** css-background source: supported simple case parses + loads. */
+async function testCssBackgroundSource() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const images = [];
+  const env = build.env;
+  env.Image = function FakeImage() {
+    this.complete = false;
+    this.crossOrigin = null;
+    this.onload = null;
+    this.onerror = null;
+    this._src = '';
+    Object.defineProperty(this, 'src', {
+      get() { return this._src; },
+      set(v) { this._src = String(v); }
+    });
+    this.naturalWidth = 800; this.naturalHeight = 600;
+    images.push(this);
+  };
+  const fakeStyles = {
+    backgroundImage: 'url("stars.jpg")',
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    backgroundRepeat: 'no-repeat'
+  };
+  const { els, rafQueue, MinaLiquid, doc } = bootGlassWithGL(build, {
+    getComputedStyle: () => fakeStyles
+  });
+  void doc;
+  const target = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 800 }) };
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'css-background', target } });
+  assert(images.length === 1, 'the css url() must be loaded as an Image');
+  assert(images[0]._src === 'stars.jpg', 'the url must be extracted from the computed style');
+  assert(liquid.getSceneState() === 'loading', 'css-background starts loading');
+  // resolve the load
+  images[0].complete = true;
+  images[0].onload && images[0].onload();
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'ready', 'css-background image must promote the scene');
+  assert(els[0].classList.contains('mina-liquid-gl') === true, 'GL class after css-background ready');
+  liquid.destroy();
+}
+
+/** css-background: unsupported backgrounds fail cleanly (no mis-draw). */
+async function testCssBackgroundUnsupported() {
+  const cases = [
+    { backgroundImage: 'linear-gradient(red, blue), url(a.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'url(a.jpg), url(b.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'url(a.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'repeat' },
+    { backgroundImage: 'url(a.jpg)', backgroundSize: 'auto auto', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }
+  ];
+  for (const fakeStyles of cases) {
+    const build = buildGlassEnvironment({ liquidCount: 1 });
+    const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build, {
+      getComputedStyle: () => fakeStyles
+    });
+    const target = { getBoundingClientRect: () => ({ width: 1280, height: 800 }) };
+    const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'css-background', target } });
+    drainRaf(rafQueue, 3);
+    assert(liquid.getSceneState() === 'failed', `unsupported background must fail cleanly (${fakeStyles.backgroundImage.slice(0, 30)})`);
+    assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class for unsupported css-background');
+    liquid.destroy();
+  }
+}
+
+/** css-background cover mapping math: CSS cover geometry equals the
+ * renderer's cover-fit (aspect-driven scale + center). */
+async function testCssBackgroundCoverMath() {
+  // CSS background-size: cover on a 1280x800 box with a 800x600 image:
+  // scale = max(1280/800, 800/600) = 1.6 -> drawn 1280x960, centered
+  // (0, -80). The scene shader cover-fit uses the same formula on the
+  // viewport; assert the shared math directly.
+  const coverScale = (boxW, boxH, imgW, imgH) => Math.max(boxW / imgW, boxH / imgH);
+  const s = coverScale(1280, 800, 800, 600);
+  const drawnW = 800 * s, drawnH = 600 * s;
+  const offsetX = (1280 - drawnW) / 2, offsetY = (800 - drawnH) / 2;
+  assert(Math.abs(s - 1.6) < 1e-9, 'cover scale must be max ratio');
+  assert(drawnW >= 1280 && drawnH >= 800, 'cover must fill the box');
+  assert(Math.abs(offsetX) < 1e-9 && Math.abs(offsetY - (-80)) < 1e-9, 'center position must offset symmetrically');
+}
+
+/** sceneProvider: renders into a provider canvas, dirty-driven. */
+async function testSceneProvider() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  let renderCalls = 0;
+  const states = [];
+  const provider = {
+    render(ctx, state) {
+      renderCalls++;
+      states.push(state);
+      if (typeof ctx.fillRect !== 'function') throw new Error('provider must receive a 2d context');
+      ctx.fillStyle = '#123456';
+      ctx.fillRect(0, 0, state.width, state.height);
+    }
+  };
+  const liquid = new MinaLiquid({ backend: 'webgl', sceneProvider: provider });
+  drainRaf(rafQueue, 3);
+  assert(renderCalls >= 1, 'provider.render must be called for the initial scene');
+  const st = states[states.length - 1];
+  assert(typeof st.width === 'number' && typeof st.height === 'number', 'provider must receive viewport size');
+  assert(typeof st.scrollY === 'number', 'provider must receive scroll position');
+  assert(typeof st.drawScale === 'number', 'provider must receive the render scale');
+  assert(typeof st.time === 'number', 'provider must receive a timestamp');
+  assert(liquid.getSceneState() === 'ready', 'provider scene must become ready');
+  assert(els[0].classList.contains('mina-liquid-gl') === true, 'GL class with a provider scene');
+
+  // Dirty-driven: a dirty frame renders exactly once more
+  const callsAfterReady = renderCalls;
+  liquid._sceneDirty = true;
+  liquid._frame();
+  assert(renderCalls === callsAfterReady + 1, `a dirty frame renders exactly once (got ${renderCalls - callsAfterReady})`);
+  // clean frames do NOT re-run provider.render
+  liquid._frame();
+  assert(renderCalls === callsAfterReady + 1, 'a clean frame must NOT re-run provider.render');
+
+  // invalidateScene() re-renders the provider
+  liquid.invalidateScene();
+  drainRaf(rafQueue, 2);
+  assert(renderCalls > callsAfterReady + 1, 'invalidateScene must trigger a provider redraw');
+  liquid.destroy();
+}
+
+/** sceneProvider failure: throwing provider fails the scene, DOM background
+ * (i.e., the CSS surface) stays visible; nothing becomes black/transparent. */
+async function testSceneProviderFailure() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const provider = {
+    render() { throw new Error('boom'); }
+  };
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'sceneProvider', provider } });
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'failed', 'throwing provider must fail the scene');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class after provider failure');
+  assert(els[0].classList.contains('mina-liquid-static') === true || els[0].classList.contains('mina-liquid-native') === true,
+    'provider failure must keep the CSS surface');
+  liquid.destroy();
+}
+
+/** invalidateScene on a dynamic canvas source: re-uploads only when dirty. */
+async function testDynamicCanvasDirtyRedraw() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { fakeGL, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const canvasEl = { width: 512, height: 512, getContext: (kind) => (kind === '2d' ? { drawImage() {} } : null) };
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'canvas', el: canvasEl } });
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'ready', 'canvas source must be ready');
+  const uploadsBefore = fakeGL.calls.filter((c) => c[0] === 'texImage2D').length;
+
+  // invalidateScene re-uploads exactly once per dirty frame
+  liquid.invalidateScene();
+  drainRaf(rafQueue, 2);   // one drained RAF frame
+  const afterInvalidate = fakeGL.calls.filter((c) => c[0] === 'texImage2D').length;
+  assert(afterInvalidate === uploadsBefore + 1,
+    `invalidateScene must re-upload the canvas exactly once (delta ${afterInvalidate - uploadsBefore})`);
+  // further clean frames do not re-upload
+  liquid._frame();
+  const afterClean = fakeGL.calls.filter((c) => c[0] === 'texImage2D').length;
+  assert(afterClean === afterInvalidate, 'clean frames must not re-upload the canvas');
+  liquid.destroy();
+}
+
+/** Video A queued rVFC callback -> setSource(video B): the stale callback
+ * must not touch video B's state (vrafId, sceneDirty, draws). */
+async function testVideoStaleCallbackIsolation() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const videoA = new FakeVideoElement();
+  videoA.videoWidth = 640; videoA.videoHeight = 360;
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: videoA } });
+  videoA.dispatchEvent(new FakeEvent('loadeddata'));
+  videoA.play();
+  videoA.dispatchEvent(new FakeEvent('playing'));
+  drainRaf(rafQueue, 2);
+  assert(videoA.pendingVideoFrameCount > 0, 'video A has a queued rVFC');
+
+  // switch to video B while A's rVFC is still queued
+  const videoB = new FakeVideoElement();
+  videoB.videoWidth = 640; videoB.videoHeight = 360;
+  liquid.setSource({ type: 'video', el: videoB });
+  videoB.dispatchEvent(new FakeEvent('loadeddata'));
+  videoB.play();
+  videoB.dispatchEvent(new FakeEvent('playing'));
+  drainRaf(rafQueue, 2);
+
+  const drawsBefore = liquid.getStats().draws;
+  const dirtyBefore = liquid._sceneDirty;
+  // fire A's stale queued callback AFTER B is live
+  videoA.fireVideoFrame();
+  // The stale callback must not schedule a render for the new source nor
+  // corrupt video B's vrafId: pending B frames stay intact.
+  assert(videoB.pendingVideoFrameCount > 0, 'video B frame scheduling must be untouched');
+  // and no draws happened from the stale callback alone
+  const drew = liquid.getStats().draws > drawsBefore;
+  // A stale callback firing CAN legitimately cause a render if it ran while
+  // still current; here it ran after the switch, so it must be a no-op:
+  assert(drew === false || dirtyBefore === true,
+    'stale video A callback must not force a render after the switch');
+  liquid.destroy();
 }
 
 
@@ -1490,15 +1806,24 @@ const tests = [
   ["Video RAF fallback only without rVFC", testVideoRafFallback],
   ["Reusable downscale canvas for >2048px sources", testReusableDownscaleCanvas],
   ["maxRefractionPx displacement cap", testMaxDisplacementCap],
-  ["Displacement profile: 0 < center < mid < edge, capped", testDisplacementProfile],
-  ["Lens magnification points inward (magnify)", testMagnificationProfile],
-  ["Lens bulge shader contract (uniforms + joint cap)", testLensBulgeShaderContract],
-  ["Lens uniform upload (uLensBulge/uMagnification/uCenterBlur)", testLensUniformUpload],
+  ["Displacement profile: lens warp strength + continuity + cap", testDisplacementProfile],
+  ["Lens magnification points inward (V2-grade factor)", testMagnificationProfile],
+  ["Lens warp shader contract (uniforms + joint cap + mode alpha)", testLensBulgeShaderContract],
+  ["Lens uniform upload (uLensWarp/uCenterBlur)", testLensUniformUpload],
   ["Source generation race: image A -> video B", testImageToVideoGenerationRace],
   ["setSource drops GL class immediately", testImmediateClassDropOnSetSource],
   ["10 consecutive rVFC frames render + re-register", testTenConsecutiveVideoFrames],
   ["Stale callbacks neutralized during source switch", testStaleCallbackDuringSourceSwitch],
   ["Frosted vs Liquid default priorities", testFrostedVsLiquidDifference],
+  ["Scene mode: shader selection per sceneMode", testSceneModeShaderSelection],
+  ["Scene mode: owned <-> overlay switch clears stale pixels", testSceneModeSwitch],
+  ["css-background: simple url()/cover/center/no-repeat parses + loads", testCssBackgroundSource],
+  ["css-background: unsupported backgrounds fail cleanly", testCssBackgroundUnsupported],
+  ["css-background: cover/center mapping math", testCssBackgroundCoverMath],
+  ["sceneProvider: render + dirty-driven redraw", testSceneProvider],
+  ["sceneProvider: throwing provider fails cleanly", testSceneProviderFailure],
+  ["Dynamic canvas source: invalidateScene re-uploads once", testDynamicCanvasDirtyRedraw],
+  ["Video A queued rVFC -> video B: stale callback isolated", testVideoStaleCallbackIsolation],
   ["Context lost -> frosted -> restored re-earn", testContextLostRestoreCycle]
 ];
 

@@ -44,6 +44,8 @@ function grabFrame(liquid, canvas) {
   const w = canvas.width, h = canvas.height;
   const px = new Uint8Array(w * h * 4);
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  // readPixels writes GL-bottom-up rows; flip into css-top-down so all the
+  // measurement helpers (channelRow / alphaAt) index by css-top y directly.
   const flipped = new Uint8ClampedArray(w * h * 4);
   for (let y = 0; y < h; y++) {
     flipped.set(px.subarray(y * w * 4, y * w * 4 + w * 4), (h - 1 - y) * w * 4);
@@ -154,7 +156,9 @@ function displacementProfile(testFrame, baseFrame, rect) {
 /* Lens magnification sign check: at symmetric interior points the sampling
  * shift must point INWARD (toward the glass center) on BOTH sides — that is
  * the definition of magnification (sampled uv closer to the lens axis).
- * Measured on the center line at +/-60px from the glass center. */
+ * Measured on the center line at +/-60px from the glass center. Correlation
+ * shifts are integer-quantized; require sign agreement when |shift| >= 2
+ * (sub-2px shifts are rounding noise). */
 function lensDirection(testFrame, baseFrame, rect) {
   const cy = Math.round((rect.T + rect.B) / 2);
   const aRow = channelRow(testFrame, cy, 1);
@@ -165,8 +169,11 @@ function lensDirection(testFrame, baseFrame, rect) {
   const left = corrShift(aRow, bRow, cx - 60, 4, 24);    // -x side
   if (right.score < MIN_CONF || left.score < MIN_CONF) return { inward: false, right: 0, left: 0 };
   // inward: +x side samples left (shift < 0), -x side samples right (shift > 0)
+  const rightSig = Math.abs(right.shift) >= 2 ? Math.sign(right.shift) : 0;
+  const leftSig = Math.abs(left.shift) >= 2 ? Math.sign(left.shift) : 0;
+  const inward = (rightSig <= 0 && leftSig >= 0) || (rightSig === 0 && leftSig === 0);
   return {
-    inward: right.shift < 0 && left.shift > 0,
+    inward,
     right: right.shift,
     left: left.shift
   };
@@ -227,10 +234,11 @@ async function run() {
   // so correlation can lock the exact sampling displacement; dispersion is
   // raised so the R/B split is measurable. Defaults are asserted in the
   // unit suite (DEFAULT_GLASS) instead of here.
-  const probeGlass = { refraction: 0.32, lensBulge: 0.017, magnification: 0.025, blur: 0, dispersion: 0.1, fresnel: 0.16, specular: 0.14, edgeWidth: 0.21, edgeBlur: 0, centerBlur: 0, edgeShadow: 0.1 };
+  const probeGlass = { lensWarp: 0.10, refraction: 0.34, blur: 0, dispersion: 0.1, fresnel: 0.16, specular: 0.12, edgeWidth: 0.2, edgeBlur: 0, centerBlur: 0, edgeShadow: 0.1 }; // ISOLATIONTEST
   const liquid = new MinaLiquid({
     canvas, backend: "webgl", quality: "high",
     source: { type: "canvas", el: sceneCanvas },
+    sceneMode: "owned",
     maxRefractionPx: 40,
     glass: probeGlass
   });
@@ -265,6 +273,7 @@ async function run() {
   await waitReady();
   out.sceneState = liquid.getSceneState();
   out.glClass = glassEl.className;
+  out.glassDebug = { glass: liquid.glass, stats: liquid.getStats(), maxRefractionPx: liquid.maxRefractionPx };
   if (!glassEl.className.includes("mina-liquid-gl")) {
     out.error = "GL class missing after scene ready";
     document.getElementById("probe-result").textContent = "PROBE_JSON " + JSON.stringify(out);
@@ -282,8 +291,8 @@ async function run() {
     liquid._frame();
   }
 
-  /* ---- Baseline: refraction = lens = dispersion = fresnel = specular = 0 ---- */
-  liquid.setGlass({ refraction: 0, lensBulge: 0, magnification: 0, dispersion: 0, fresnel: 0, specular: 0 });
+  /* ---- Baseline: lensWarp = refraction = dispersion = fresnel = specular = 0 ---- */
+  liquid.setGlass({ lensWarp: 0, refraction: 0, dispersion: 0, fresnel: 0, specular: 0 });
   forceFrame();
   const baseFrame = grabFrame(liquid, canvas);
 
@@ -300,6 +309,13 @@ async function run() {
     tiny: displacementProfile(testFrame, baseFrame, scaleRect(tiny))
   };
   out.lensDirection = lensDirection(testFrame, baseFrame, scaleRect(big));
+  {
+    const cy0 = Math.round((scaleRect(big).T + scaleRect(big).B) / 2);
+    const aR = channelRow(testFrame, cy0, 1);
+    const bR = channelRow(baseFrame, cy0, 1);
+    const sl = Math.round(scaleRect(big).L + 40);
+    out.rowdump = { at: sl, test: Array.from(aR.slice(sl, sl + 24)), base: Array.from(bR.slice(sl, sl + 24)) };
+  }
 
   /* ---- dispersion: R/B sampling split (rim) ---- */
   out.dispersionSplit = dispersionSplit(testFrame, baseFrame, scaleRect(big));
@@ -359,6 +375,38 @@ async function run() {
     state: liquid.getSceneState(),
     hasGlClass: glassEl.className.includes("mina-liquid-gl")
   };
+
+  /* ---- scene mode alpha contract (owned now; overlay next) ---- */
+  function alphaAt(frame, x, y) {
+    // frame is already flipped to css-top-down rows: index directly
+    const i = (y * frame.w + x) * 4;
+    return frame.px[i + 3];
+  }
+  out.alphaOwned = {
+    outside: alphaAt(testFrame, 20, 20),
+    inside: alphaAt(testFrame, Math.round((scaleRect(big).L + scaleRect(big).R) / 2), Math.round((scaleRect(big).T + scaleRect(big).B) / 2))
+  };
+
+  /* ---- overlay mode: same scene, switch modes at runtime ---- */
+  liquid.setSceneMode("overlay");
+  forceFrame();
+  const overlayFrame = grabFrame(liquid, canvas);
+  out.alphaOverlay = {
+    outside: alphaAt(overlayFrame, 20, 20),
+    inside: alphaAt(overlayFrame, Math.round((scaleRect(big).L + scaleRect(big).R) / 2), Math.round((scaleRect(big).T + scaleRect(big).B) / 2))
+  };
+  // glass displacement profile must still hold in overlay mode
+  out.displacementOverlay = displacementProfile(overlayFrame, baseFrame, scaleRect(big));
+  const ocx = Math.round((scaleRect(big).L + scaleRect(big).R) / 2);
+  const ocy = Math.round((scaleRect(big).T + scaleRect(big).B) / 2);
+  const oidx = ((overlayFrame.h - 1 - ocy) * overlayFrame.w + ocx) * 4;
+  const bidx = ((baseFrame.h - 1 - ocy) * baseFrame.w + ocx) * 4;
+  out.overlayDebug = {
+    glassRGB: [overlayFrame.px[oidx], overlayFrame.px[oidx + 1], overlayFrame.px[oidx + 2], overlayFrame.px[oidx + 3]],
+    baseRGB: [baseFrame.px[bidx], baseFrame.px[bidx + 1], baseFrame.px[bidx + 2], baseFrame.px[bidx + 3]]
+  };
+  liquid.setSceneMode("owned");
+  forceFrame();
 
   /* ---- destroy ---- */
   liquid.destroy();
