@@ -858,7 +858,6 @@ class MinaLiquid {
         };
         const onReady = function () {
             if (self.destroyed) return;
-            if (self.sceneState === SCENE_STATE_LOADING) self._setSceneState(SCENE_STATE_LOADING);
             markDirty();
         };
         const onPlaying = function () {
@@ -872,13 +871,13 @@ class MinaLiquid {
             if (self.destroyed) return;
             self._videoActive = false;
             markDirty();
-            self._stopVideoRaf();
+            self._stopVideoFrames();
         };
         const onEnded = function () {
             if (self.destroyed) return;
             self._videoActive = false;
             markDirty();
-            self._stopVideoRaf();
+            self._stopVideoFrames();
         };
         const onLoadedData = function () {
             if (self.destroyed) return;
@@ -909,6 +908,9 @@ class MinaLiquid {
 
         if (supportsVrFc) {
             const onVideoFrame = function () {
+                // The callback id is consumed once fired; clear it first so a
+                // stale id can never block re-registration below.
+                if (self._videoCleanup) self._videoCleanup.setVrafId(0);
                 if (self.destroyed || !self._videoActive) return;
                 self._sceneDirty = true;
                 self._emptyDrawn = false;
@@ -954,6 +956,15 @@ class MinaLiquid {
         this._sceneDirty = true;
         this.requestRender();
 
+        // A user-provided video may already be loaded/playing when handed
+        // over: no event will fire for state we missed, so adopt it here.
+        if (video.readyState >= 2) markDirty();
+        if (!video.paused) {
+            this._videoActive = true;
+            this._scheduleVideoFrame();   // rVFC path (no-op if unsupported)
+            this._startVideoRaf();        // RAF fallback path (no-op if rVFC)
+        }
+
         // Kick playback for internally created videos only.
         if (this._ownsVideoEl && spec && spec.src && video.src !== spec.src) {
             video.src = spec.src;
@@ -987,9 +998,13 @@ class MinaLiquid {
         this._videoRafTick();
     }
 
-    _stopVideoRaf() {
+    /* Stop all video-driven scheduling (rVFC + RAF fallback). Used on pause,
+     * ended and context loss so no frame callbacks keep firing while the
+     * video is not contributing pixels. */
+    _stopVideoFrames() {
         const cleanup = this._videoCleanup;
         if (!cleanup) return;
+        cleanup.cancelVraf();
         cleanup.cancelRaf();
     }
 
@@ -1119,7 +1134,17 @@ class MinaLiquid {
 
         let w = el.naturalWidth || el.videoWidth || el.width || 0;
         let h = el.naturalHeight || el.videoHeight || el.height || 0;
-        if (!w || !h) { this._hasScene = false; return; }
+        if (!w || !h) {
+            this._hasScene = false;
+            // Videos legitimately have no pixels before loadedmetadata; an
+            // image/canvas that reports zero size never will, so fail it
+            // instead of sitting in 'loading' forever.
+            if (this.sceneState === SCENE_STATE_LOADING
+                && String(el.tagName || '').toUpperCase() !== 'VIDEO') {
+                this._sceneFailed('source has no pixels');
+            }
+            return;
+        }
 
         let source = el;
         if (w > MAX_TEXTURE_EDGE || h > MAX_TEXTURE_EDGE) {
@@ -1523,9 +1548,10 @@ class MinaLiquid {
             }
         }
 
-        // Continuous frames come from the video driver (rVFC or RAF
-        // fallback); only the fallback needs the display-frame chain here.
-        if (videoActive && !this._videoFrameHandler) this.requestRender();
+        // Continuous frames come from the video driver: rVFC (per new video
+        // frame) or the RAF fallback chain started in _startVideoRaf. No
+        // display-frame chain is spawned here — that would double the RAF
+        // work of the fallback path.
     }
 
     _observeElements() {
@@ -1551,7 +1577,7 @@ class MinaLiquid {
             self._sceneFrameDrawn = false;
             if (self.sceneState === SCENE_STATE_READY) self._setSceneState(SCENE_STATE_LOADING);
             self._cancelFrame();
-            self._stopVideoRaf();
+            self._stopVideoFrames();
             self._teardownGlObjects();
             self._switchBackend(MinaLiquid.supportsNativeBlur() ? 'native' : 'static');
             console.warn('MinaLiquid: WebGL context lost, switched to', self.backend);
@@ -1584,6 +1610,12 @@ class MinaLiquid {
             // completes; _frame() re-syncs after promotion.
             this._syncElementClasses();
             this.requestRender();
+            // A video that kept playing through the context loss stopped
+            // being scheduled (frame callbacks were cancelled); restart it.
+            if (this._videoActive && this._sourceEl && this._sourceEl.paused === false) {
+                this._scheduleVideoFrame();
+                this._startVideoRaf();
+            }
         } else {
             if (this.canvas) this.canvas.style.display = 'none';
             this._teardownGlObjects();

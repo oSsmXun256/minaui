@@ -1097,6 +1097,116 @@ async function testDisplacementProfile() {
   }
 }
 
+/** The rVFC handler must re-register itself after every fired frame; a stale
+ * callback id must never block the next registration (Chrome regression). */
+async function testVideoFrameCallbackReregistration() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const video = new FakeVideoElement();
+  video.videoWidth = 1280; video.videoHeight = 720;
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: video } });
+  video.dispatchEvent(new FakeEvent('loadedmetadata'));
+  video.dispatchEvent(new FakeEvent('loadeddata'));
+  video.play();
+  video.dispatchEvent(new FakeEvent('playing'));
+  drainRaf(rafQueue, 2);
+
+  const drawsBefore = liquid.getStats().draws;
+  video.fireVideoFrame();
+  assert(video.pendingVideoFrameCount > 0, 'after a fired frame a new rVFC must be registered');
+  drainRaf(rafQueue, 2);
+  assert(liquid.getStats().draws > drawsBefore, 'frame 1 must trigger a render');
+
+  const drawsAfterFirst = liquid.getStats().draws;
+  video.fireVideoFrame();
+  assert(video.pendingVideoFrameCount > 0, 'rVFC must keep re-registering (frame 2)');
+  drainRaf(rafQueue, 2);
+  assert(liquid.getStats().draws > drawsAfterFirst, 'frame 2 must trigger another render');
+  liquid.destroy();
+}
+
+/** pause must cancel the pending rVFC + RAF (no callbacks while not playing). */
+async function testVideoPauseCancelsFrameCallbacks() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const video = new FakeVideoElement();
+  video.videoWidth = 1280; video.videoHeight = 720;
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: video } });
+  video.play();
+  video.dispatchEvent(new FakeEvent('playing'));
+  drainRaf(rafQueue, 2);
+  assert(video.pendingVideoFrameCount > 0, 'precondition: rVFC pending while playing');
+
+  video.dispatchEvent(new FakeEvent('pause'));
+  assert(video.pendingVideoFrameCount === 0, 'pause must cancel the pending rVFC');
+
+  // resume -> scheduling restarts
+  video.play();
+  video.dispatchEvent(new FakeEvent('playing'));
+  drainRaf(rafQueue, 2);
+  assert(video.pendingVideoFrameCount > 0, 'resume must re-register the frame callback');
+  liquid.destroy();
+}
+
+/** A user-provided video that is ALREADY playing/loaded must be adopted
+ * immediately (playing/loadeddata will never fire again for it). */
+async function testExistingPlayingVideoAdopted() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const video = new FakeVideoElement();
+  video.videoWidth = 1280; video.videoHeight = 720;
+  video.readyState = 2;              // HAVE_CURRENT_DATA: pixels available
+  video.play();                      // already playing before hand-over
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: video } });
+  assert(video.pendingVideoFrameCount > 0, 'already-playing video must register rVFC immediately');
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'ready', 'already-loaded video must promote the scene without new events');
+  assert(els[0].classList.contains('mina-liquid-gl') === true, 'GL class after adoption frame');
+  liquid.destroy();
+  assert(video.paused === false, 'destroy must not pause a user-provided video');
+}
+
+/** An image element with complete=true but zero pixels (broken decode) must
+ * fail the scene instead of sitting in loading forever. */
+async function testZeroSizeImageElementFails() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const broken = { complete: true, naturalWidth: 0, naturalHeight: 0, tagName: 'IMG' };
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'image', el: broken } });
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'failed', 'zero-size image element must mark the scene failed');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class for a zero-size image source');
+  assert(els[0].classList.contains('mina-liquid-static') === true || els[0].classList.contains('mina-liquid-native') === true,
+    'zero-size image source must keep the CSS surface');
+  liquid.destroy();
+}
+
+/** A playing video survives a context cycle: lost cancels the frame
+ * callbacks, restored restarts them without a pause/play cycle. */
+async function testVideoSchedulingAcrossContextLoss() {
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { glCanvas, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  const video = new FakeVideoElement();
+  video.videoWidth = 1280; video.videoHeight = 720;
+  video.readyState = 2;
+  video.play();
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'video', el: video } });
+  drainRaf(rafQueue, 2);
+  assert(video.pendingVideoFrameCount > 0, 'precondition: rVFC pending while playing');
+
+  glCanvas.dispatchEvent(new FakeEvent('webglcontextlost', { cancelable: true }));
+  assert(video.pendingVideoFrameCount === 0, 'context lost must cancel video frame callbacks');
+
+  const gl = liquid.getContext();
+  gl.isContextLost = () => false;
+  glCanvas.dispatchEvent(new FakeEvent('webglcontextrestored'));
+  assert(liquid.backend === 'webgl', 'restore must rebuild the webgl backend');
+  assert(video.pendingVideoFrameCount > 0, 'restore must restart frame callbacks for a still-playing video');
+  drainRaf(rafQueue, 3);
+  assert(liquid.getSceneState() === 'ready', 'restore + video frame must re-earn the scene');
+  liquid.destroy();
+}
+
 const tests = [
   ["Liquid quality normalization (V3 default balanced)", testQualityNormalization],
   ["Liquid quality pipeline shape (pyramid tiers)", testQualityPipelineShape],
@@ -1118,6 +1228,11 @@ const tests = [
   ["Framebuffer allocation failure -> fallback", testFramebufferFailure],
   ["Scene ready gate: GL class only after first scene frame", testSceneReadyClassGate],
   ["Video lifecycle: late metadata + rVFC frames", testVideoFrameCallbackLifecycle],
+  ["Video rVFC re-registers per frame (continuous updates)", testVideoFrameCallbackReregistration],
+  ["Video pause cancels pending rVFC + RAF", testVideoPauseCancelsFrameCallbacks],
+  ["Existing playing video element adopted", testExistingPlayingVideoAdopted],
+  ["Zero-size image element -> scene failed", testZeroSizeImageElementFails],
+  ["Video scheduling across context loss/restore", testVideoSchedulingAcrossContextLoss],
   ["Video destroy: internal released, user untouched", testVideoDestroyCleanup],
   ["Video RAF fallback only without rVFC", testVideoRafFallback],
   ["Reusable downscale canvas for >2048px sources", testReusableDownscaleCanvas],

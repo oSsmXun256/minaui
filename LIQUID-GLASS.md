@@ -67,6 +67,8 @@ failed   → ロード失敗 / CORS / tainted canvas / invalid source
 - 対応ブラウザでは **`requestVideoFrameCallback()`** を優先し、**新しいフレームが来た時だけ** Scene を更新します
 - 未対応環境のみ RAF fallback (再生中のみ)。**常時無条件 RAF は禁止**という設計方針です
 - ユーザーが渡した `<video>` 要素は内部生成 video と同一の追跡を受けますが、`destroy()` で pause / src 解放されることは**ありません** (内部生成 video のみ解放します)
+- すでに再生中 / ロード済みの `<video>` を `el` で渡した場合も、現在の状態 (playing / readyState) を引き継ぐためイベントを取りこぼしません
+- `pause` / `ended` / context lost では保留中の rVFC と RAF を停止し、context restored 時に再生中であれば自動で再開します
 - 2048px 超の video source は **reusable staging canvas** に一度だけ確保され、毎フレーム新規 canvas は生成されません
 
 ### 推奨用途
