@@ -181,15 +181,27 @@ v0.3.0 から Liquid Glass は **MinaLiquid V3** — 描画原理から再設計
 
 > **重要**: WebGL は任意の DOM を透視できません。MinaLiquid は **レンダラ自身が管理する Scene** (image / video / canvas / gradient) を屈折させます。DOM を capture しているわけではありません。
 
+### Frosted と Liquid の違い
+
+| | CSS Frosted (`mina-glass` / `mina-liquid-native`) | WebGL Liquid (`mina-liquid` + MinaLiquid) |
+| :-- | :-- | :-- |
+| 背景 | **blur のみ** (geometry は変化しない) | **曲がる・僅かに拡大される** |
+| 中央 | 均一 blur | 近似シャープ + ~2-4% 倍率 |
+| エッジ | なし | 強屈折 + Fresnel + specular |
+| 見え方 | すりガラス | 透明な厚みのあるレンズ |
+| 向き | 読みやすさ優先の下地 | 主役面の展示 |
+
 ```js
 const liquid = new MinaLiquid({
   source: { type: "image", src: "/background.jpg" },
   quality: "balanced",   // high | balanced | performance
-  maxRefractionPx: 40,   // 屈折変位の安全上限 (design px)
+  maxRefractionPx: 40,   // 屈折変位 (lens + edge 合成) の安全上限
   glass: {
-    refraction: 0.16,    // 縁の屈折
-    blur: 10,            // 透過blur
-    dispersion: 0.03,    // 極小のRGB分散
+    refraction: 0.32,    // エッジの屈折
+    magnification: 0.025, // 中央のレンズ倍率 (~2.5%)
+    lensBulge: 0.017,    // rim 方向へ成長するレンズ成分
+    blur: 5,            // 控えめな透過blur (中央はさらにシャープ)
+    dispersion: 0.02,   // 極小のRGB分散
     fresnel: 0.16        // 縁のリムライト
   }
 });
@@ -206,9 +218,10 @@ DOM 側は geometry を渡すだけです:
 
 ### 動作の要点
 
-- **中央はフラット**: 屈折・Fresnel・blur増加はエッジ近傍だけ。中央は背景をほぼそのまま透す
-- **屈折の安全上限**: 変位は `maxRefractionPx` (既定40px) でスムーズに制限。どのカードサイズでも極端な伸びは起きない
-- **scene readiness**: Scene が GPU に upload され最初の1フレームが描けるまで `.mina-liquid-gl` は付与されない。それまでは CSS 表面で表示
+- **レンズ倍率が主役**: 中央はごく弱い倍率変化 (~2-4%)、エッジは強い屈折 + Fresnel。blur と specular は控えめで、背景が「曲がる・少し拡大される」ことでガラスの存在を主張する
+- **屈折の安全上限**: lens + edge の合成変位は `maxRefractionPx` (既定40px) で制限。どのカードサイズでも極端な伸びは起きない
+- **中央は近似シャープ**: `centerBlur` によりガラス中央の背景情報量を残す (すりガラス = CSS Frosted の役割)
+- **scene readiness**: Scene が GPU に upload され最初の1フレームが描けるまで `.mina-liquid-gl` は付与されない。それまでは CSS 表面で表示。source 切替時も即座に CSS 表面へ戻る
 - **source failure**: 画像ロード失敗 / CORS / tainted canvas / invalid canvas / 動画未準備でも透明・黒にならず CSS 表面へ fallback
 - **video lifecycle**: `requestVideoFrameCallback` 優先 (未対応環境のみRAF fallback・再生中のみ)。`destroy()` は内部生成 `<video>` だけ解放
 - **blur pyramid**: Scene から 1/2, 1/4, 1/8 のぼかしレベルを事前生成。ピクセルごとの多段 tap はしない

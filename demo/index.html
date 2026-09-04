@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="MinaLiquid V3 (WebGL Liquid Glass) と CSS Frosted Glass / Static Surface を比較検証するデモ">
+  <meta name="description" content="MinaLiquid V3 Liquid Glass — 屈折・レンズ倍率・エッジベベルを実際に見る比較デモ">
   <title>MinaUI — Liquid Glass Lab</title>
   <link rel="stylesheet" href="../minaui.css">
   <style>
@@ -18,7 +18,7 @@
     .lab-state--failed, .lab-state--fallback { color: #f87171; border-color: #f87171; }
     .lab-state--none { color: var(--mina-text-muted); }
     .lab-disp { font-size: .72rem; opacity: .85; }
-    .lab-disp meter { width: 8rem; height: .55rem; }
+    .lab-btn-active { outline: 2px solid var(--mina-primary); outline-offset: 1px; }
   </style>
 </head>
 <body>
@@ -27,9 +27,9 @@
       <p class="mina-eyebrow mina-text-primary">MinaLiquid V3</p>
       <h1 class="mina-h1">Liquid Glass Lab</h1>
       <p class="mina-text-muted">
-        WebGL Liquid Glass は専用レンダラが管理する Scene を屈折させます。DOM はキャプチャされません。
-        中央はフラットに保ち、エッジだけで屈折・ハイライトが起こるのが正しい見た目です。
-        屈折の変位は <code class="mina-mono">maxRefractionPx</code> (既定40px) で安全に制限されます。
+        Liquid Glass は背景を <strong>屈折させて少しだけ拡大する</strong> ことで「厚みのある透明なレンズ」を表現します。
+        中央はわずかな倍率変化、エッジは強い屈折 + Fresnel。blur は控えめで、背景の情報量を中央に残します。
+        CSS Frosted (blur のみ) との違いは Grid / Pattern シーンではっきり分かります。
       </p>
     </header>
 
@@ -42,6 +42,7 @@
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="pattern">Pattern</button>
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="grid">Grid</button>
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="gradient">Gradient</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-source="video">Video</button>
         </div>
         <div class="mina-cluster" role="group" aria-label="品質">
           <span class="mina-label">Quality</span>
@@ -49,26 +50,39 @@
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-quality="balanced">Balanced</button>
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-quality="performance">Performance</button>
         </div>
-        <div class="mina-cluster" role="group" aria-label="バックエンド">
+        <div class="mina-cluster" role="group" aria-label="サーフェス比較">
           <span class="mina-label">Surface</span>
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-backend="liquid">Liquid</button>
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-backend="native">Frosted</button>
           <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-backend="static">Static</button>
         </div>
-        <div class="mina-cluster" role="group" aria-label="屈折比較">
-          <label class="mina-cluster mina-gap-1" style="gap:.4rem">
-            <input type="checkbox" id="lab-refract-off">
-            <span class="mina-caption">Refraction OFF (A/B)</span>
-          </label>
+        <div class="mina-cluster" role="group" aria-label="プリセット">
+          <span class="mina-label">Preset</span>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-preset="natural">Natural</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-preset="soft">Soft</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-preset="strong">Strong</button>
+          <button class="mina-btn mina-btn--sm mina-btn--glass" type="button" data-lab-preset="performance">Performance</button>
         </div>
       </div>
+      <div class="mina-cluster mina-wrap mina-mt-3" role="group" aria-label="A/B比較">
+        <label class="mina-cluster mina-gap-1" style="gap:.4rem">
+          <input type="checkbox" id="lab-refract-off">
+          <span class="mina-caption">Refraction OFF (blurのみ)</span>
+        </label>
+        <label class="mina-cluster mina-gap-1" style="gap:.4rem">
+          <input type="checkbox" id="lab-bulge-off">
+          <span class="mina-caption">Lens Bulge OFF (エッジ屈折のみ)</span>
+        </label>
+      </div>
       <div class="mina-grid mina-grid--4 mina-mt-3" aria-label="ガラスパラメータ">
-        <label class="lab-slider"><span class="mina-caption">refraction</span><input type="range" min="0" max="0.6" step="0.01" value="0.16" data-lab-param="refraction"><output>0.16</output></label>
-        <label class="lab-slider"><span class="mina-caption">blur</span><input type="range" min="0" max="25" step="1" value="10" data-lab-param="blur"><output>10</output></label>
-        <label class="lab-slider"><span class="mina-caption">dispersion</span><input type="range" min="0" max="0.2" step="0.005" value="0.03" data-lab-param="dispersion"><output>0.03</output></label>
+        <label class="lab-slider"><span class="mina-caption">refraction</span><input type="range" min="0" max="0.6" step="0.01" value="0.32" data-lab-param="refraction"><output>0.32</output></label>
+        <label class="lab-slider"><span class="mina-caption">lensBulge</span><input type="range" min="0" max="0.25" step="0.005" value="0.017" data-lab-param="lensBulge"><output>0.017</output></label>
+        <label class="lab-slider"><span class="mina-caption">magnification</span><input type="range" min="0" max="0.25" step="0.005" value="0.025" data-lab-param="magnification"><output>0.025</output></label>
+        <label class="lab-slider"><span class="mina-caption">edgeWidth</span><input type="range" min="0.05" max="0.5" step="0.01" value="0.21" data-lab-param="edgeWidth"><output>0.21</output></label>
+        <label class="lab-slider"><span class="mina-caption">blur</span><input type="range" min="0" max="25" step="1" value="5" data-lab-param="blur"><output>5</output></label>
         <label class="lab-slider"><span class="mina-caption">fresnel</span><input type="range" min="0" max="1" step="0.05" value="0.16" data-lab-param="fresnel"><output>0.16</output></label>
-        <label class="lab-slider"><span class="mina-caption">edgeWidth</span><input type="range" min="0.05" max="0.5" step="0.01" value="0.16" data-lab-param="edgeWidth"><output>0.16</output></label>
-        <label class="lab-slider"><span class="mina-caption">specular</span><input type="range" min="0" max="1" step="0.05" value="0.16" data-lab-param="specular"><output>0.16</output></label>
+        <label class="lab-slider"><span class="mina-caption">specular</span><input type="range" min="0" max="1" step="0.05" value="0.14" data-lab-param="specular"><output>0.14</output></label>
+        <label class="lab-slider"><span class="mina-caption">dispersion</span><input type="range" min="0" max="0.2" step="0.005" value="0.02" data-lab-param="dispersion"><output>0.02</output></label>
         <label class="lab-slider"><span class="mina-caption">maxRefractionPx</span><input type="range" min="8" max="120" step="4" value="40" data-lab-maxdisp><output>40</output></label>
       </div>
       <p class="mina-caption mina-mt-3" id="lab-status" role="status">backend: — / quality: —</p>
@@ -76,31 +90,31 @@
 
     <!-- Stage: liquid glass elements over the WebGL scene -->
     <section class="lab-stage mina-stack mina-stack--4" aria-label="ガラス比較ステージ">
-      <article class="mina-liquid mina-p-6" data-mina-liquid data-mina-refraction="1" aria-labelledby="hero-title">
+      <article class="mina-liquid mina-p-6" data-mina-liquid aria-labelledby="hero-title">
         <div class="mina-stack mina-stack--2">
           <h2 class="mina-h2" id="hero-title">Hero liquid card</h2>
-          <p class="mina-lead">この面は MinaLiquid (WebGL2) が描画しています。中央は背景がほぼそのまま透け、
-            エッジ近傍だけで屈折・フレネル・スペキュラが発生します。直線や文字がエッジでわずかに曲がるのが正常です。</p>
+          <p class="mina-lead">この面は MinaLiquid (WebGL2) が描画しています。背景がごく薄い倍率で拡大され、
+            エッジに近づくほど屈折が強くなります。直線や人物の輪郭が境界で僅かにずれる / 曲がるのが正常です。</p>
           <div class="mina-cluster">
-            <span class="mina-chip">center ≈ 0 displacement</span>
-            <span class="mina-chip">edge-focused refraction</span>
+            <span class="mina-chip">subtle lens bulge</span>
+            <span class="mina-chip">edge refraction</span>
             <span class="mina-chip">safe displacement cap</span>
           </div>
         </div>
       </article>
 
       <div class="mina-grid mina-grid--3">
-        <article class="mina-liquid mina-p-5" data-mina-liquid data-mina-refraction="1.4" data-mina-blur="14" aria-label="強めの液体ガラス">
+        <article class="mina-liquid mina-p-5" data-mina-liquid data-mina-refraction="1.4" data-mina-blur="8" aria-label="強めの液体ガラス">
           <h3 class="mina-h5">Strong lens</h3>
-          <p class="mina-small">refraction 1.4 — 強め。エッジの伸びが maxRefractionPx で飽和する安全側の例。</p>
+          <p class="mina-small">refraction 1.4 — エッジの伸びが maxRefractionPx で飽和する安全側の例。</p>
         </article>
-        <article class="mina-liquid mina-p-5" data-mina-liquid data-mina-refraction="0.6" data-mina-blur="6" aria-label="弱屈折の液体ガラス">
+        <article class="mina-liquid mina-p-5" data-mina-liquid data-mina-refraction="0.6" data-mina-blur="4" aria-label="弱屈折の液体ガラス">
           <h3 class="mina-h5">Soft lens</h3>
-          <p class="mina-small">refraction 0.6 — 推奨寄りの弱屈折。自然に見える範囲。</p>
+          <p class="mina-small">refraction 0.6 — 控えめ。自然に見える範囲の下限。</p>
         </article>
         <article class="mina-card mina-glass mina-p-5" aria-label="CSS すりガラス">
           <h3 class="mina-h5">CSS frosted glass</h3>
-          <p class="mina-small">backdrop-filter ベース。DOM 背面をそのままブラーする Level 2 の面です。</p>
+          <p class="mina-small">backdrop-filter ベース。背景は blur するが<strong>曲がらない</strong>。Liquid との違いは Grid シーンで。</p>
         </article>
       </div>
 
@@ -111,13 +125,13 @@
         </article>
         <article class="mina-liquid mina-p-5" data-mina-liquid aria-label="格子/パターン上の液体ガラス">
           <h3 class="mina-h5">Lens on lines</h3>
-          <p class="mina-small">Pattern / Grid ソースでは中央が真っ直ぐで、エッジだけで線が曲がる屈折差が最も分かりやすいです。</p>
+          <p class="mina-small">Grid / Pattern ソースでは、線がガラス内で僅かに倍率変化し、エッジで曲がるのが最も分かりやすいです。</p>
         </article>
       </div>
     </section>
 
     <footer class="mina-caption mina-mt-8">
-      URL パラメータ: <code class="mina-mono">?source=photo|pattern|grid|gradient&amp;quality=high|balanced|performance&amp;backend=liquid|native|static</code>
+      URL パラメータ: <code class="mina-mono">?source=photo|pattern|grid|gradient|video&amp;quality=high|balanced|performance&amp;backend=liquid|native|static</code>
     </footer>
   </main>
 
@@ -151,8 +165,7 @@
         return canvas;
       })();
 
-      /* GRID: dense vertical/horizontal lines for displacement inspection.
-       * 中央は線が真っ直ぐ、エッジだけで線が曲がる差が一番見やすい。 */
+      /* GRID: dense lines — lens magnification + edge bend is most visible. */
       var GRID = (function () {
         var canvas = document.createElement('canvas');
         canvas.width = 1400; canvas.height = 900;
@@ -177,37 +190,44 @@
         photo: { type: 'image', src: 'assets/vrc-background.jpg' },
         pattern: { type: 'canvas', el: PATTERN },
         grid: { type: 'canvas', el: GRID },
-        gradient: { type: 'gradient', stops: [[0, '#0b0716'], [0.35, '#ec4899'], [0.7, '#8b5cf6'], [1, '#22d3ee']], angle: 135 }
+        gradient: { type: 'gradient', stops: [[0, '#0b0716'], [0.35, '#ec4899'], [0.7, '#8b5cf6'], [1, '#22d3ee']], angle: 135 },
+        video: { type: 'video', src: 'assets/vrc-background.mp4' }
       };
 
       var BACKENDS = { liquid: 'webgl', native: 'native', static: 'static' };
 
+      /* Presets — Natural is the recommended default showcase state. */
+      var PRESETS = {
+        natural:     { refraction: 0.32, lensBulge: 0.017, magnification: 0.025, edgeWidth: 0.21, blur: 5,  fresnel: 0.16, specular: 0.14, dispersion: 0.02, maxRefractionPx: 40 },
+        soft:        { refraction: 0.24, lensBulge: 0.012, magnification: 0.018, edgeWidth: 0.17, blur: 6,  fresnel: 0.14, specular: 0.10, dispersion: 0.015, maxRefractionPx: 32 },
+        strong:      { refraction: 0.42, lensBulge: 0.026, magnification: 0.038, edgeWidth: 0.24, blur: 4,  fresnel: 0.18, specular: 0.16, dispersion: 0.03, maxRefractionPx: 48 },
+        performance: { refraction: 0.28, lensBulge: 0.015, magnification: 0.022, edgeWidth: 0.19, blur: 4,  fresnel: 0.12, specular: 0.10, dispersion: 0, maxRefractionPx: 32 }
+      };
+
       var current = {
         source: params.get('source') || 'photo',
         quality: params.get('quality') || 'high',
-        backend: params.get('backend') || 'liquid',
-        refractOn: true
+        backend: params.get('backend') || 'liquid'
       };
       if (!SOURCES[current.source]) current.source = 'photo';
 
       var refractToggle = document.getElementById('lab-refract-off');
+      var bulgeToggle = document.getElementById('lab-bulge-off');
 
-      /* 推奨既定値 (DEFAULT_GLASS と同一)。スライダー初期値として反映済み。 */
       function report() {
         if (!status) return;
         var liq = window.labLiquid;
         var s = liq ? liq.getStats() : {};
         var sceneInfo = sceneStateLabel(s.scene);
         var maxDisp = parseFloat(document.querySelector('[data-lab-maxdisp]').value);
-        var backend = s.state || '—';
         status.textContent =
-          'backend: ' + backend
+          'backend: ' + (s.state || '—')
           + ' / quality: ' + current.quality
           + ' / source: ' + current.source
           + ' / visible liquids: ' + (s.elements || 0)
           + ' / renderScale: ' + (s.scale ? s.scale.toFixed(2) : '—')
           + ' / draws: ' + (s.draws || 0)
-          + ' / lastDraw: ' + (s.lastDrawMs ? s.lastDrawMs.toFixed(1) + 'ms' : '—');
+          + ' / safe cap: ' + maxDisp + 'px';
         var old = document.getElementById('lab-state-chip');
         if (old) old.remove();
         var chip = document.createElement('span');
@@ -215,26 +235,32 @@
         chip.className = 'lab-state ' + sceneInfo[1];
         chip.textContent = sceneInfo[0];
         status.insertBefore(chip, status.firstChild);
-        var dispLine = document.getElementById('lab-disp');
-        if (dispLine) {
-          dispLine.innerHTML = 'safe displacement cap: <strong>' + maxDisp + 'px</strong>'
-            + ' — 屈折変位はこの値を超えません (実測は visual validation で検証)';
-        }
       }
 
       function glassParams() {
         var g = {
           refraction: parseFloat(document.querySelector('[data-lab-param="refraction"]').value),
-          blur: parseFloat(document.querySelector('[data-lab-param="blur"]').value),
-          dispersion: parseFloat(document.querySelector('[data-lab-param="dispersion"]').value),
-          fresnel: parseFloat(document.querySelector('[data-lab-param="fresnel"]').value),
+          lensBulge: parseFloat(document.querySelector('[data-lab-param="lensBulge"]').value),
+          magnification: parseFloat(document.querySelector('[data-lab-param="magnification"]').value),
           edgeWidth: parseFloat(document.querySelector('[data-lab-param="edgeWidth"]').value),
-          specular: parseFloat(document.querySelector('[data-lab-param="specular"]').value)
+          blur: parseFloat(document.querySelector('[data-lab-param="blur"]').value),
+          fresnel: parseFloat(document.querySelector('[data-lab-param="fresnel"]').value),
+          specular: parseFloat(document.querySelector('[data-lab-param="specular"]').value),
+          dispersion: parseFloat(document.querySelector('[data-lab-param="dispersion"]').value)
         };
         if (refractToggle && refractToggle.checked) {
           return { refraction: 0, dispersion: 0, fresnel: g.fresnel, blur: g.blur, edgeWidth: g.edgeWidth, specular: g.specular };
         }
+        if (bulgeToggle && bulgeToggle.checked) {
+          g.lensBulge = 0;
+          g.magnification = 0;
+        }
         return g;
+      }
+
+      function applyParams() {
+        if (window.labLiquid) window.labLiquid.setGlass(glassParams());
+        report();
       }
 
       function rebuild() {
@@ -259,8 +285,22 @@
         return map[state] || ['no scene', 'lab-state--none'];
       }
 
+      function markActive(groupAttr, value) {
+        document.querySelectorAll('[' + groupAttr + ']').forEach(function (btn) {
+          if (btn.getAttribute(groupAttr) === value) btn.classList.add('lab-btn-active');
+          else btn.classList.remove('lab-btn-active');
+        });
+      }
+
+      markActive('data-lab-source', current.source);
+      markActive('data-lab-backend', current.backend);
+
       document.querySelectorAll('[data-lab-source]').forEach(function (btn) {
-        btn.addEventListener('click', function () { current.source = btn.getAttribute('data-lab-source'); rebuild(); });
+        btn.addEventListener('click', function () {
+          current.source = btn.getAttribute('data-lab-source');
+          markActive('data-lab-source', current.source);
+          rebuild();
+        });
       });
       document.querySelectorAll('[data-lab-quality]').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -270,12 +310,32 @@
         });
       });
       document.querySelectorAll('[data-lab-backend]').forEach(function (btn) {
-        btn.addEventListener('click', function () { current.backend = btn.getAttribute('data-lab-backend'); rebuild(); });
+        btn.addEventListener('click', function () {
+          current.backend = btn.getAttribute('data-lab-backend');
+          markActive('data-lab-backend', current.backend);
+          rebuild();
+        });
+      });
+      document.querySelectorAll('[data-lab-preset]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var preset = PRESETS[btn.getAttribute('data-lab-preset')];
+          if (!preset) return;
+          for (var key in preset) {
+            var input = key === 'maxRefractionPx'
+              ? document.querySelector('[data-lab-maxdisp]')
+              : document.querySelector('[data-lab-param="' + key + '"]');
+            if (input) {
+              input.value = preset[key];
+              input.nextElementSibling.textContent = String(preset[key]);
+            }
+          }
+          applyParams();
+        });
       });
       document.querySelectorAll('[data-lab-param]').forEach(function (input) {
         input.addEventListener('input', function () {
           input.nextElementSibling.textContent = input.value;
-          if (window.labLiquid) window.labLiquid.setGlass(glassParams());
+          applyParams();
         });
       });
       var maxDispInput = document.querySelector('[data-lab-maxdisp]');
@@ -284,17 +344,8 @@
         if (window.labLiquid) window.labLiquid.setMaxRefractionPx(parseFloat(maxDispInput.value));
         report();
       });
-      refractToggle.addEventListener('change', function () {
-        current.refractOn = !refractToggle.checked;
-        if (window.labLiquid) window.labLiquid.setGlass(glassParams());
-      });
-
-      /* scene state line under the controls */
-      var dispLine = document.createElement('p');
-      dispLine.id = 'lab-disp';
-      dispLine.className = 'mina-caption mina-mt-2 lab-disp';
-      dispLine.setAttribute('aria-live', 'polite');
-      status.parentNode.insertBefore(dispLine, status.nextSibling);
+      refractToggle.addEventListener('change', applyParams);
+      bulgeToggle.addEventListener('change', applyParams);
 
       rebuild();
       window.addEventListener('scroll', function () { setTimeout(report, 60); }, { passive: true });

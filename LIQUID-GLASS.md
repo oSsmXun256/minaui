@@ -107,52 +107,110 @@ Pass 3: Composite       — 各要素の Rounded-rect SDF から
 
 ## 4. Glass Model (Shader)
 
-ガラス表面は「Rounded Rectangle + 円形キャップ状のベベル」でモデル化します。
+ガラス表面は「Rounded Rectangle + 円形キャップ状のベベル + 内部の弱いレンズ場」でモデル化します。
 
 - **SDF**: rounded box の符号付き距離場で要素を特定
 - **edge proximity**: `t = 0` (中央) → `t = 1` (縁) の正規化距離
-- **normal**: SDF の解析的勾配 × ベベル勾配 `t / sqrt(1 - t²)` (smooth saturation)
-- **屈折**: `refractedUV = uv + normal.xy * refraction * edgeWidth` — **中央はほぼゼロ**
-- **safety limit**: 最終変位は `maxRefractionPx` (既定 40 design px) でスムーズに clamp
+- **Lens field (V3.2)**: 正規化 rounded-rect 座標 `q = p / half` から作られる **magnification / lens bulge**。V2 の `(uv - center) * scale` とは異なり、SDF・要素形状に追従し、ハンドオーバー `t²` でエッジ屈折に自然に主役を譲る
+- **normal**: SDF の解析的勾配 × ベベル勾配 `t / sqrt(1 - t²)` (smooth saturation) + 内部レンズ傾き
+- **屈折**: `refractedUV = uv + (lensBulgeOffset + edgeRefractionOffset)` — **中央はごく弱い倍率、エッジは強屈折**
+- **safety limit**: **合成変位 (lens + edge) 全体** が `maxRefractionPx` (既定 40 design px) で clamp
 
 つまり:
 
 ```text
-中心   → 屈折なし・ぼかし最小・背景をほぼそのまま表示
-中間   → 弱い屈折
-縁     → 強い屈折 + Fresnel + specular + ぼかし増加 + 色分散
+中心   → ごく弱い倍率変化 (背景が僅かに拡大される — これが「レンズがある」感覚)
+中間   → lens bulge プラトー (倍率 ~2-4%)
+エッジ → 強い屈折 + Fresnel + specular + ぼかし増加 + 色分散
 ```
 
-カード中央を激しく歪ませないのが設計上の最重要ポイントです。人間がガラスと認識するのは縁の曲率と光の反射だからです。
+### なぜこの見た目が Liquid Glass に見えるのか
 
-### Refraction safety (変位の上限)
+人間が「透明な厚みのあるガラス」を認識する手がかりは blur ではなく **背景の歪み** です:
 
-circular-cap bevel の傾き `t/sqrt(1-t²)` は `t → 1` で発散するため、そのまま使うとカードサイズ次第で背景が極端に伸びます。V3 は次の 2 段階の安全策を持ちます:
+1. **背景が少し拡大される** — 中央倍率 ~2-4% は、線や輪郭がガラス内で僅かに間隔を変えるため「そこにレンズがある」と知覚される (V3.1 は中央完全フラットだったため blur card に見えた)
+2. **エッジで背景が曲がる** — エッジ屈折は外側の背景を引き込むため、境界を跨ぐ直線が明確に折れ曲がる
+3. **方向性のあるハイライト** — 全周均一の白縁ではなく、左上光源の specular/Fresnel のみ
 
-1. **smooth saturation**: 傾きを soft-knee で滑らかに飽和させます (物理的な「中央 0 → 中間 小 → 縁 最強」の単調性は維持)
-2. **px cap**: 最終 sampling displacement を `maxRefractionPx` (design px) 以下に clamp。shader には `uMaxDispPx` (renderScale 付き) として渡されます
+V2 の「ぐにゃん」は UV を中心基準で拡大するだけの粗い表現でしたが、その知覚的な強み (倍率差で存在を主張する) は V3.2 では SDF・ハンドオーバー・安全上限の上に再構築されています。
+
+### Lens field と Edge refraction の違い
+
+| | Lens field (内部) | Edge refraction (エッジ) |
+| :-- | :-- | :-- |
+| 領域 | 中央〜中間 (ベベル外側) | ベベル内 (edgeWidth) |
+| 方向 | 内向き (中心へ) — **拡大** | 外向き — **引き込み/圧縮** |
+| 強さ | `magnification` + `lensBulge` (線形に成長) | `refraction` × ベベル勾配 (エッジで急増) |
+| 役割 | 「レンズがそこにある」倍率差 | 境界の視覚的切断・湾曲 |
+
+ハンドオーバー `t²` により、両者はベベル内で交差しながら滑らかに繋がります (内→外の変位が一度ゼロを跨ぐ S 字カーブ。物理的に正しい)。
+
+### Refraction safety (合成変位の上限)
+
+circular-cap bevel の傾き `t/sqrt(1-t²)` は `t → 1` で発散するため、そのまま使うとカードサイズ次第で背景が極端に伸びます。V3.2 は次の安全策を持ちます:
+
+1. **smooth saturation**: 傾きを soft-knee で滑らかに飽和
+2. **joint px cap**: **`length(lensBulgeOffset + edgeRefractionOffset) <= maxRefractionPx`** — lens と edge の合計が上限を超えることはパラメータ如何を問わず起きない
 
 ```js
 new MinaLiquid({ ..., maxRefractionPx: 40 });   // 既定 40 (4..512 に clamp)
 liquid.setMaxRefractionPx(24);                 // 実行時変更も可能
 ```
 
-**どんなカードサイズでも極端な UV ジャンプは起きません** (visual validation で実測検証)。
+**どんなカードサイズ・パラメータでも極端な UV ジャンプは起きません** (visual validation で実測検証)。
 
 ### Chromatic Aberration
 
-RGB dispersion は**エッジ近傍のみ**、屈折オフセットの数 % だけ R/B を逆方向にずらします。既定値 `dispersion: 0.03` はゲーミングエフェクトにならないよう意図的に極小です。`performance` 品質では無効、`balanced` では 60% 減衰します。
+RGB dispersion は**エッジ近傍のみ**、屈折オフセットの数 % だけ R/B を逆方向にずらします。既定値 `dispersion: 0.02` はゲーミングエフェクトにならないよう意図的に極小です。`performance` 品質では無効、`balanced` では 60% 減衰します。
 
-### 推奨既定値 (V3.1)
+### Blur profile (V3.2: center-sharp)
+
+blur は一様ではなく、中央ほど弱くエッジほどやや強いプロファイルを持ちます:
+
+```text
+lod = blurLod * (1 - centerBlur * inset) + edgeBlur * t²
+```
+
+- 中央 (`inset ≈ 1`): LOD は `blur * (1 - centerBlur)` まで下がる — **背景の情報量を残す** (すりガラスにしない)
+- エッジ (`t → 1`): `edgeBlur` 分が追加され、わずかに強い
+
+これにより Liquid Glass は「レンズ」、CSS Frosted は「すりガラス」という**役割分担**が明確になります:
+
+| | CSS Frosted (`mina-liquid-native`) | WebGL Liquid (`mina-liquid-gl`) |
+| :-- | :-- | :-- |
+| 背景 | blur のみ (geometry 変化なし) | **曲がる・僅かに拡大される** |
+| エッジ | なし | 強屈折 + Fresnel |
+| 中央 | 均一 blur | 近似シャープ + 弱倍率 |
+| 役割 | 読みやすさ優先の下地 | 主役面の展示 |
+
+### 推奨既定値 (V3.2)
 
 | parameter | 既定 | 意図 |
 | :-- | :-- | :-- |
-| `refraction` | `0.16` | エッジで自然に見える範囲の弱屈折 |
-| `blur` | `10` | 背景を完全に消さない透過 blur |
+| `refraction` | `0.32` | エッジ屈折。一目でガラスと分かる強さ |
+| `magnification` | `0.025` | 中央の等倍率成分 (~2.5%) |
+| `lensBulge` | `0.017` | rim 方向へ成長するレンズ成分 (合成 ~2-4%) |
+| `blur` | `5` | 背景情報を残す弱めの透過 blur |
+| `centerBlur` | `0.45` | 中央の LOD 減衰率 (すりガラス化防止) |
 | `fresnel` | `0.16` | リムライトが白飛びしない強度 |
-| `specular` | `0.16` | ハイライトが白い玉にならない強度 |
-| `dispersion` | `0.03` | ほぼ知覚不可の色縁 |
-| `edgeWidth` | `0.16` | ベベル幅 (短辺比)。広すぎると中央まで屈折する |
+| `specular` | `0.14` | ハイライトが白い玉にならない強度 |
+| `dispersion` | `0.02` | ほぼ知覚不可の色縁 |
+| `edgeWidth` | `0.21` | ベベル幅 (短辺比) |
+| `edgeBlur` | `0.55` | エッジへの blur 増加 |
+| `maxRefractionPx` | `40` | 合成変位の安全上限 (design px) |
+
+**強すぎる distortion を避ける理由**: `refraction` やレンズ値を上げすぎると、ガラスではなく「水滴 / 魚眼レンズ / ワープエフェクト」に見えます。MinaUI は UI ライブラリであり、訴求点は「透明な厚みのある上質なガラス」です。Strong preset (refraction 0.42) が実用上限と考えてください。
+
+### Recommended presets (Demo の Natural / Soft / Strong / Performance)
+
+Demo (`demo/index.html`) の preset ボタンは上記思想をそのまま反映しています:
+
+- **Natural** (推奨既定値と同一) — 「開いた瞬間にこれが MinaLiquid と分かる」展示状態
+- **Soft** — 控えめ。テキスト多い面向け
+- **Strong** — 実用上限。それでも極端な warp はしない
+- **Performance** — 低負荷向け (mip-only + dispersion 0)
+
+調整はスライダーで行い、気に入った値を `glass` オプションとして渡してください。
 
 ---
 
@@ -222,16 +280,19 @@ const liquid = new MinaLiquid({
   renderScale: 1,               // devicePixelRatio への係数
   maxPixelCount: 1920 * 1080,   // バックバッファ上限
   maxElements: 8,               // 同時追跡する liquid 要素数 (最大16)
-  maxRefractionPx: 40,          // 屈折変位の安全上限 (design px)
+  maxRefractionPx: 40,          // 屈折変位 (lens + edge 合成) の安全上限
   glass: {
-    refraction: 0.16,           // 縁の屈折量 (edgeWidth の割合)
-    blur: 10,                   // 透過blur (design px → LOD)
+    refraction: 0.32,           // エッジの屈折量
+    magnification: 0.025,       // 中央の等倍率レンズ成分
+    lensBulge: 0.017,           // rim 方向へ成長するレンズ成分
+    blur: 5,                    // 透過blur (design px → LOD)
+    centerBlur: 0.45,           // 中央の blur 減衰 (背景情報を残す)
     fresnel: 0.16,              // 縁の Fresnel リムライト
-    specular: 0.16,              // 縁の指向性ハイライト
-    dispersion: 0.03,           // RGB分散 (ごく僅かに)
-    edgeBlur: 0.4,              // 縁に向かう blur 増加
+    specular: 0.14,             // 縁の指向性ハイライト
+    dispersion: 0.02,           // RGB分散 (ごく僅かに)
+    edgeBlur: 0.55,             // 縁に向かう blur 増加
     edgeShadow: 0.22,           // 縁のコンタクトシャドウ
-    edgeWidth: 0.16,            // ベベル幅 (短辺比)
+    edgeWidth: 0.21,            // ベベル幅 (短辺比)
     tint: 0.05,
     tintColor: [1, 1, 1],
     saturation: 1.06,
@@ -331,7 +392,7 @@ CSS カスタムプロパティとの連携: 角丸は通常 `border-radius` の
 同じ Scene (coordinate-coded: 64px 周期の triangle wave + per-column noise) ・同じ glass geometry で:
 
 ```text
-Baseline: refraction = 0, dispersion = 0, fresnel = 0, specular = 0
+Baseline: refraction = lensBulge = magnification = 0
 Test:     通常の glass 設定
 ```
 
@@ -339,7 +400,9 @@ Test:     通常の glass 設定
 
 ### 検証項目
 
-- center displacement ≈ 0 / mid ≤ edge (rim 方向に単調)
+- **center displacement > 0** (lens magnification が存在すること — 中央が完全フラットなら失格)
+- **mid (lens bulge) > center** / **edge (edge refraction) が最大** (帯順序)
+- **lens direction**: 対称点の変位が両側とも内向き (= 拡大レンズ) であること
 - maximum displacement ≤ safe limit (`maxRefractionPx` × renderScale)
 - white clipping (中央・エッジの白飛び率)
 - RGB dispersion 強度 (R と B の sampling shift 差)
@@ -348,6 +411,16 @@ Test:     通常の glass 設定
 - source failure fallback (404 画像 → CSS 表面)
 - context lost → frosted → restored (再 earn まで GL class なし)
 - destroy (GL class 除去)
+
+### Magnification の実測 (V3.2)
+
+Grid scene (35px 間隔の縦線) に対する実測では、glass 内部の線間隔が **+3.4%** 広がることが確認されています:
+
+```text
+outside: 73.5px spacing / inside: 76px spacing / ratio = 1.034
+```
+
+これは「単なる色差」ではなく **feature spacing から検出したレンズ倍率** であり、Human eye が「レンズがある」と知覚する根拠と同じものです。
 
 実行には `python -m http.server 4173` 相当のローカルサーバーと Chrome が必要です。
 

@@ -20,10 +20,17 @@
  *                                dispersion, fresnel, specular, tint)
  *
  * Glass model: the surface is a rounded box with a circular-cap bevel on the
- * rim. The interior is optically flat (no distortion); curvature, refraction,
- * fresnel and specular grow toward the edge only. The bevel slope is
- * normalized and displacement is capped (uMaxDisplacementPx / maxRefractionPx)
- * so no card size can produce extreme UV jumps near the rim.
+ * rim PLUS a weak shape-aware lens field over the interior (lensBulge).
+ * The interior slightly magnifies the scene: displacement points inward and
+ * is built from normalized rounded-rect coordinates (q = p / half) weighted
+ * by SDF edge proximity — NOT the V2 "(uv - center) * scale" trick. Near the
+ * rim the lens hands control to the edge bevel smoothly (handover mask), so
+ * the profile reads as: center = subtle magnification, mid = lens bulge,
+ * edge = strong refraction + fresnel + specular + blur. The COMBINED
+ * displacement (lens + edge) is capped (uMaxDispPx / maxRefractionPx) so no
+ * card size can produce extreme UV jumps, and blur ramps from a near-sharp
+ * center to a slightly stronger rim (centerBlur), keeping background
+ * information visible through the middle of the glass.
  *
  * Scene readiness: the GL-active class (.mina-liquid-gl) is only applied
  * after the scene has been uploaded to the GPU AND one full frame has been
@@ -62,25 +69,35 @@ const SCENE_STATE_FAILED = 'failed';
 
 /* Global glass appearance. "blur" is expressed in design px and mapped to a
  * blur-pyramid LOD; refraction is a fraction of the edge width; dispersion
- * offsets are relative to the refraction offset (kept tiny on purpose). */
+ * offsets are relative to the refraction offset (kept tiny on purpose).
+ *
+ * Visual priority (V3.2): refraction/magnification first, blur and specular
+ * second. The interior keeps a near-sharp sampled background (centerBlur
+ * trims the LOD toward 0 at the middle) so the glass reads as a lens, not as
+ * frosted blur. */
 const DEFAULT_GLASS = {
-    refraction: 0.16,
-    blur: 10,
+    refraction: 0.32,
+    lensBulge: 0.017,
+    magnification: 0.025,
+    blur: 5,
     fresnel: 0.16,
-    specular: 0.16,
-    dispersion: 0.03,
-    edgeBlur: 0.4,
+    specular: 0.14,
+    dispersion: 0.02,
+    edgeBlur: 0.55,
+    centerBlur: 0.45,
     edgeShadow: 0.22,
-    edgeWidth: 0.16,
+    edgeWidth: 0.21,
     tint: 0.05,
     tintColor: [1.0, 1.0, 1.0],
     saturation: 1.06,
     brightness: 1.0
 };
 
-/* Safety limit for refraction displacement, in CSS px (design px). The shader
- * divides it by uResolution-derived px scale to derive a per-pixel cap that is
- * resolution independent. Public option/API: maxRefractionPx (default 40). */
+/* Safety limit for the COMBINED refraction displacement (lens bulge +
+ * edge refraction), in CSS px (design px). The shader divides it by
+ * uResolution-derived px scale to derive a per-pixel cap that is
+ * resolution independent. Public option/API: maxRefractionPx (default 40).
+ * length(lensOffset + edgeOffset) <= maxRefractionPx is guaranteed. */
 const DEFAULT_MAX_REFRACTION_PX = 40;
 
 /* Pipeline shape per quality tier. quality stays a WebGL tier; environment
@@ -156,12 +173,21 @@ void main() {
  * Geometry: for each tracked element a rounded-box SDF selects the owning
  * glass and provides an analytic outward gradient. A circular-cap bevel
  * h(t) = 1 - sqrt(1 - t^2) (t = 0 center -> 1 rim) gives the surface slope;
- * refraction offsets grow with the slope, so the center stays flat.
+ * refraction offsets grow with the slope.
+ *
+ * Lens field (V3.2): on top of the edge bevel, the interior carries a weak
+ * magnifying lens. The lens offset is built from the NORMALIZED rounded-rect
+ * coordinates q = p / half (so it follows the glass shape, not UV space)
+ * scaled by an SDF-driven field: subtle at the center, handing control to
+ * the edge refraction near the rim via the handover mask t^2. Center shows
+ * a small but non-zero inward displacement (magnification), mid shows the
+ * bulge, edge is dominated by bevel refraction + fresnel + specular + blur.
  *
  * Refraction safety: the raw bevel slope diverges at t -> 1, so it is
  * (1) smoothly saturated (denom floor + soft-knee) and (2) the final
- * displacement in pixels is clamped to uMaxDisplacementPx, resolved in
- * physical px. This keeps center ~= 0, mid small, edge strongest, while
+ * COMBINED displacement (lens bulge + edge refraction) in pixels is
+ * clamped to uMaxDispPx, resolved in physical px. This keeps center
+ * subtle but non-zero, mid clearly larger, edge strongest, while
  * guaranteeing no extreme UV jump for any card size.
  */
 function buildCompositeShaderSource(mode) {
@@ -183,11 +209,14 @@ uniform vec4 uRect[MAX_ELEMENTS];   // cx, cy (GL px), halfW, halfH
 uniform vec4 uShape[MAX_ELEMENTS];  // radiusPx, blurLod, refractionScale, tintStrength
 uniform vec3 uTintColor;
 uniform float uRefraction;
+uniform float uLensBulge;
+uniform float uMagnification;
 uniform float uEdgeWidth;
 uniform float uFresnel;
 uniform float uSpecular;
 uniform float uDispersion;
 uniform float uEdgeBlur;
+uniform float uCenterBlur;
 uniform float uEdgeShadow;
 uniform float uSaturation;
 uniform float uBrightness;
@@ -262,7 +291,27 @@ void main() {
 
         vec2 gdir = sdRoundBoxGrad(p, half_, shape.x);
 
-        /* Circular-cap bevel with a smooth saturation near the rim.
+        /* ---- lens field (shape-aware, NOT the V2 center-scale trick) ----
+         * q = p / half: normalized rounded-rect coordinates, each axis in
+         * [-1, 1]; radial = max(|q|) is the shape-aware rim proximity.
+         * A magnifying lens displaces LINEARLY with distance from the
+         * center (|D| ~ radial): that is what makes the background read
+         * as uniformly scaled-up, and what creates the visible interior/
+         * exterior offset when lines cross the glass boundary (the V2
+         * charm). Unlike V2 this field:
+         *   - follows the rounded-rect shape (q, not uv),
+         *   - fades to zero inside the edge bevel (handover = t^2),
+         *   - is capped jointly with the edge refraction below.
+         * inset = (1 - radial)^1.5 drives the center-sharp blur ramp. */
+        vec2 q = p / half_;
+        float radial = max(abs(q.x), abs(q.y));
+        float inset = pow(1.0 - clamp(radial, 0.0, 1.0), 1.5);
+        float handover = t * t;
+        float lensMag = (uMagnification + uLensBulge * radial) * shape.z;
+        vec2 lensBulgeOffset = -q * lensMag * (1.0 - handover) * min(half_.x, half_.y);
+
+        /* ---- edge bevel refraction (rim only) ----
+         * Circular-cap bevel with a smooth saturation near the rim.
          * Raw slope t/sqrt(1-t^2) diverges at t->1; the soft-knee form
          * keeps the monotonic "center 0 -> mid small -> edge strongest"
          * profile while bounding the gradient norm. */
@@ -273,16 +322,26 @@ void main() {
         slope = mix(slope, 5.0, knee * 0.85);
         vec2 n2 = gdir * slope;
 
-        float lod = shape.y + t * uEdgeBlur;
+        /* Edge displacement: refraction * edge width. */
+        vec2 edgeRefractionOffset = n2 * uRefraction * w * shape.z;
 
-        /* Physical displacement: refraction * edge width, then capped by
-         * uMaxDispPx (already multiplied by the px scale on the JS side). */
-        vec2 refractPx = n2 * uRefraction * w * shape.z;
+        /* ---- combined displacement + hard safety cap ----
+         * length(lensBulgeOffset + edgeRefractionOffset) <= uMaxDispPx is
+         * guaranteed for ANY parameter combination: the sum is capped
+         * jointly, so neither term can push the total past the limit. */
+        vec2 refractPx = lensBulgeOffset + edgeRefractionOffset;
         float dispLen = length(refractPx);
         if (dispLen > uMaxDispPx && dispLen > 0.0) {
             refractPx *= uMaxDispPx / dispLen;
         }
         vec2 ruv = fragPx + refractPx;
+
+        /* ---- blur profile: near-sharp center -> slightly stronger rim ----
+         * The element base LOD is trimmed toward 0 across the interior
+         * (centerBlur * inset) so the middle keeps background information
+         * (lens, not frosted); edgeBlur adds the quadratic rim falloff. */
+        float lod = shape.y * (1.0 - uCenterBlur * inset);
+        lod += uEdgeBlur * t * t;
 
         vec3 col;
         ${perf
@@ -306,8 +365,11 @@ void main() {
         float shade = smoothstep(0.45, 1.0, t) * clamp(-gdir.y, 0.0, 1.0);
         col *= 1.0 - uEdgeShadow * shade;
 
-        // lighting: fresnel rim + directional specular, both edge-weighted
-        vec3 N = normalize(vec3(n2, 1.0));
+        // lighting: fresnel rim + directional specular, both edge-weighted.
+        // The lens adds a slight inward tilt to the interior normal so light
+        // reads the surface as curved glass rather than a flat sheet.
+        vec2 lensTilt = -q * uLensBulge * 2.0;
+        vec3 N = normalize(vec3(n2 * (1.0 - handover) + lensTilt * inset, 1.0));
         float fres = pow(1.0 - clamp(N.z, 0.0, 1.0), 3.0);
         vec3 L = normalize(vec3(-0.32, 0.5, 0.8));
         vec3 H = normalize(L + vec3(0.0, 0.0, 1.0));
@@ -738,6 +800,11 @@ class MinaLiquid {
      */
     setSource(spec) {
         if (this.destroyed || !spec) return;
+        // Generation token: bumped for EVERY source switch (all types), so
+        // any stale async callback from the previous source (image onload/
+        // onerror, video frame callbacks, canvas adoption) can never act on
+        // the new state. Covers image A -> video B and video A -> video B.
+        this._sourceToken = {};
         this._teardownVideo();
         this._sourceEl = null;
         this._ownsVideoEl = false;
@@ -747,6 +814,12 @@ class MinaLiquid {
         const type = spec.type || (spec.el ? 'element' : 'image');
         this._sourceSpec = Object.assign({ type }, spec);
         this._setSceneState(SCENE_STATE_LOADING);
+        // Drop the GL-active class IMMEDIATELY: until the new scene earns a
+        // composited frame, elements show the CSS frosted/static surface.
+        this._syncElementClasses();
+        this._emptyDrawn = false;
+        this._sceneDirty = true;
+        this.requestRender();
 
         if (type === 'image') {
             if (spec.el && spec.el.complete !== false) {
@@ -756,7 +829,7 @@ class MinaLiquid {
             const img = spec.el || (typeof Image !== 'undefined' ? new Image() : null);
             if (!img) { this._sceneFailed('no Image constructor'); return; }
             img.crossOrigin = 'anonymous';
-            const token = this._sourceToken = {};
+            const token = this._sourceToken;
             const self = this;
             img.onload = function () { if (!self.destroyed && self._sourceToken === token) self._adoptSourceElement(img); };
             img.onerror = function () {
@@ -826,12 +899,14 @@ class MinaLiquid {
     }
 
     _clearScene() {
+        this._sourceToken = {};
         this._teardownVideo();
         this._sourceEl = null;
         this._ownsVideoEl = false;
         this._hasScene = false;
         this._sceneFrameDrawn = false;
         this._setSceneState(SCENE_STATE_NONE);
+        this._syncElementClasses();
         this._sceneDirty = true;
         this.requestRender();
     }
@@ -1309,11 +1384,14 @@ class MinaLiquid {
         if (u.uShape) gl.uniform4fv(u.uShape, this._shapeArray);
         if (u.uTintColor) gl.uniform3f(u.uTintColor, g.tintColor[0], g.tintColor[1], g.tintColor[2]);
         if (u.uRefraction) gl.uniform1f(u.uRefraction, g.refraction);
+        if (u.uLensBulge) gl.uniform1f(u.uLensBulge, g.lensBulge);
+        if (u.uMagnification) gl.uniform1f(u.uMagnification, g.magnification);
         if (u.uEdgeWidth) gl.uniform1f(u.uEdgeWidth, g.edgeWidth);
         if (u.uFresnel) gl.uniform1f(u.uFresnel, g.fresnel);
         if (u.uSpecular) gl.uniform1f(u.uSpecular, g.specular);
         if (u.uDispersion) gl.uniform1f(u.uDispersion, g.dispersion * cfg.dispersionScale);
         if (u.uEdgeBlur) gl.uniform1f(u.uEdgeBlur, cfg.pyramidLevels === 0 ? clampValue(g.blur / 8, 1, 4) : g.edgeBlur);
+        if (u.uCenterBlur) gl.uniform1f(u.uCenterBlur, g.centerBlur);
         if (u.uEdgeShadow) gl.uniform1f(u.uEdgeShadow, g.edgeShadow);
         if (u.uSaturation) gl.uniform1f(u.uSaturation, g.saturation);
         if (u.uBrightness) gl.uniform1f(u.uBrightness, g.brightness);

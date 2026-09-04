@@ -94,11 +94,11 @@ function corrShift(aRow, bRow, x, halfWin, maxShift) {
 }
 
 /* Displacement vs distance-from-rim, measured on the horizontal center line.
- * Bands are defined by PHYSICAL distance from the rim so they match the
- * bevel geometry regardless of card size:
- *   edge: 2..8px from the rim   (strong refraction zone)
- *   mid:  12..22px from the rim (bevel mid)
- *   center: >= 40px from the rim (optically flat interior) */
+ * Bands for the V3.2 lens+edge model (lens bulge interior, edge bevel rim):
+ *   edge:   2..10px from the rim  (edge refraction zone, strongest)
+ *   mid:   30..55px from the rim (lens bulge plateau — clearly > center)
+ *   center: 70..110px from the rim (deep interior, subtle but NON-zero:
+ *           the lens magnification is what makes the glass read as a lens) */
 function displacementProfile(testFrame, baseFrame, rect) {
   const cy = Math.round((rect.T + rect.B) / 2);
   const aRow = channelRow(testFrame, cy, 1);
@@ -132,9 +132,9 @@ function displacementProfile(testFrame, baseFrame, rect) {
   };
   const avg = (arr) => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : 0;
   const edge = avg(collect(2, 8));
-  const mid = avg(collect(12, 22));
+  const mid = avg(collect(30, 55));
   const centerArr = [];
-  for (let d = 40; d <= Math.min(60, Math.floor(width / 2) - 6); d++) {
+  for (let d = 70; d <= Math.min(110, Math.floor(width / 2) - 6); d++) {
     for (const rim of [L, R]) {
       const x = rim === L ? rim + d : rim - d;
       const v = sample(x);
@@ -148,6 +148,27 @@ function displacementProfile(testFrame, baseFrame, rect) {
     center, mid, edge, max,
     edgeMid: +(mid > 0.05 ? edge / mid : 0).toFixed(2),
     validFrac: +(collect(1, 30).length / (2 * 30)).toFixed(2)
+  };
+}
+
+/* Lens magnification sign check: at symmetric interior points the sampling
+ * shift must point INWARD (toward the glass center) on BOTH sides — that is
+ * the definition of magnification (sampled uv closer to the lens axis).
+ * Measured on the center line at +/-60px from the glass center. */
+function lensDirection(testFrame, baseFrame, rect) {
+  const cy = Math.round((rect.T + rect.B) / 2);
+  const aRow = channelRow(testFrame, cy, 1);
+  const bRow = channelRow(baseFrame, cy, 1);
+  const cx = Math.round((rect.L + rect.R) / 2);
+  if (cx - 80 < 4 || cx + 80 >= aRow.length - 4) return { inward: false, right: 0, left: 0 };
+  const right = corrShift(aRow, bRow, cx + 60, 4, 24);   // +x side
+  const left = corrShift(aRow, bRow, cx - 60, 4, 24);    // -x side
+  if (right.score < MIN_CONF || left.score < MIN_CONF) return { inward: false, right: 0, left: 0 };
+  // inward: +x side samples left (shift < 0), -x side samples right (shift > 0)
+  return {
+    inward: right.shift < 0 && left.shift > 0,
+    right: right.shift,
+    left: left.shift
   };
 }
 
@@ -204,9 +225,9 @@ async function run() {
 
   // Measurement config: zero blur keeps the coded scene readable at the rim
   // so correlation can lock the exact sampling displacement; dispersion is
-  // raised so the R/B split is measurable. Default values are asserted in the
+  // raised so the R/B split is measurable. Defaults are asserted in the
   // unit suite (DEFAULT_GLASS) instead of here.
-  const probeGlass = { refraction: 0.16, blur: 0, dispersion: 0.1, fresnel: 0.16, specular: 0.16, edgeWidth: 0.16, edgeBlur: 0, edgeShadow: 0.1 };
+  const probeGlass = { refraction: 0.32, lensBulge: 0.017, magnification: 0.025, blur: 0, dispersion: 0.1, fresnel: 0.16, specular: 0.14, edgeWidth: 0.21, edgeBlur: 0, centerBlur: 0, edgeShadow: 0.1 };
   const liquid = new MinaLiquid({
     canvas, backend: "webgl", quality: "high",
     source: { type: "canvas", el: sceneCanvas },
@@ -261,8 +282,8 @@ async function run() {
     liquid._frame();
   }
 
-  /* ---- Baseline: refraction = dispersion = fresnel = specular = 0 ---- */
-  liquid.setGlass({ refraction: 0, dispersion: 0, fresnel: 0, specular: 0 });
+  /* ---- Baseline: refraction = lens = dispersion = fresnel = specular = 0 ---- */
+  liquid.setGlass({ refraction: 0, lensBulge: 0, magnification: 0, dispersion: 0, fresnel: 0, specular: 0 });
   forceFrame();
   const baseFrame = grabFrame(liquid, canvas);
 
@@ -278,6 +299,7 @@ async function run() {
     small: displacementProfile(testFrame, baseFrame, scaleRect(small)),
     tiny: displacementProfile(testFrame, baseFrame, scaleRect(tiny))
   };
+  out.lensDirection = lensDirection(testFrame, baseFrame, scaleRect(big));
 
   /* ---- dispersion: R/B sampling split (rim) ---- */
   out.dispersionSplit = dispersionSplit(testFrame, baseFrame, scaleRect(big));
