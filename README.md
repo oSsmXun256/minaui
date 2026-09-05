@@ -185,7 +185,7 @@ v0.3.0 から Liquid Glass は **MinaLiquid V3** — 描画原理から再設計
 
 | | CSS Frosted (`mina-glass` / `mina-liquid-native`) | WebGL Liquid (`mina-liquid` + MinaLiquid) |
 | :-- | :-- | :-- |
-| 背景 | **blur のみ** (geometry は変化しない) | **曲がる・明確に拡大される** (lensWarp ~6.7%) |
+| 背景 | **blur のみ** (geometry は変化しない) | **曲がる・明確に拡大される** (lensWarp ~12%) |
 | 中央 | 均一 blur | 近似シャープ + lensWarp |
 | エッジ | なし | 強屈折 + Fresnel + specular |
 | 見え方 | すりガラス | 透明な厚みのあるレンズ |
@@ -200,7 +200,7 @@ v0.3.0 から Liquid Glass は **MinaLiquid V3** — 描画原理から再設計
 
 どちらのモードでも屈折できるのは レンダラ管理の Scene (image / video / canvas / gradient / **css-background** / **sceneProvider**) のみです。**WebGL は任意の DOM を capture できません** (backdrop-filter と同じ、ではない)。
 
-`css-background` の対応範囲は厳密に **単一 url() + cover + center + no-repeat** のみです (それ以外の multi-layer / gradient / repeat / contain / 任意 size / 任意 position は scene failed として明示的に拒否)。overlay モードではガラス境界 +1px 以外は alpha = 0 が保証されます (外側の影は CSS 側 box-shadow で)。
+`css-background` の対応範囲は厳密に **単一 url() + cover + center + no-repeat** のみです。`target` の rect は viewport と **1 CSS px 以内で一致**する必要があり、任意の要素サイズは unsupported です (それ以外の multi-layer / gradient / repeat / contain / 任意 size / 任意 position も scene failed として明示的に拒否)。overlay モードではガラス境界 +1px 以外は alpha = 0 が保証されます (外側の影は CSS 側 box-shadow で)。
 
 ```js
 const liquid = new MinaLiquid({
@@ -209,7 +209,7 @@ const liquid = new MinaLiquid({
   quality: "balanced",   // high | balanced | performance
   maxRefractionPx: 40,   // 屈折変位 (lensWarp + edge 合成) の安全上限
   glass: {
-    lensWarp: 0.10,    // 主役: 内部レンズ倍率 (中間帯 ~6.7%, V2級の「ぐにゃん」)
+    lensWarp: 0.14,    // 主役: 内部レンズ倍率 (中間帯 ~12%, V2級の「ぐにゃん」)
     refraction: 0.34,  // エッジの屈折
     blur: 2,           // 軽い透過blur (背景情報を残す)
     dispersion: 0.02,   // 極小のRGB分散
@@ -233,7 +233,7 @@ DOM 側は geometry を渡すだけです:
 ### 動作の要点
 
 - **2つのシーンモード**: `owned` は WebGL が背景全体を描画。`overlay` は canvas がガラス領域だけを描き、外側は完全透明 — **普通の Web サイトの DOM/CSS 背景を勝手に置き換えない**
-- **lensWarp が主役**: ガラス内部で背景が ~6.7% (Strong ~14%) 拡大され、境界を跨ぐ直線が明確にズレる。Grid シーンで一目で分かる (旧 V2 の「ぐにゃん」を SDF・安全上限の上に再構築)
+- **lensWarp が主役**: ガラス内部で背景が ~12% (Strong ~26%) 拡大され、境界を跨ぐ直線が明確にズレる。Grid シーンで一目で分かる (旧 V2 の「ぐにゃん」を SDF・安全上限の上に再構築)
 - **屈折の安全上限**: lensWarp + edge の合成変位は `maxRefractionPx` (既定40px) で制限。どのカードサイズでも極端な伸びは起きない
 - **中央は近似シャープ**: `centerBlur` + `blur: 2` によりガラス中央の背景情報量を残す (すりガラス = CSS Frosted の役割)
 - **動的 Scene**: `sceneProvider.render(ctx, state)` + `invalidateScene()` で dirty-driven に背景を再描画 (vrc の Diamond gallery で実証)

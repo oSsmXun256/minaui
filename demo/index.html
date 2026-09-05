@@ -40,7 +40,7 @@
       <h1 class="mina-h1">Liquid Glass Lab</h1>
       <p class="mina-text-muted">
         Liquid Glass は <strong>Lens Warp で背景を明確に拡大・屈折</strong> させることで「厚みのある透明なレンズ」を表現します。
-        Natural で ~6-9%、Strong で ~12-16% の見かけ倍率。blur は 1-3px 程度の補助です。
+        Natural で ~12%、Strong で ~26% の見かけ倍率。blur は 1-3px 程度の補助です。
         <strong>owned</strong> は WebGL が背景全体を描画、<strong>overlay</strong> は DOM/CSS 背景の上にガラス領域だけを重ねます。
       </p>
     </header>
@@ -98,7 +98,7 @@
         </label>
       </div>
       <div class="mina-grid mina-grid--4 mina-mt-3" aria-label="ガラスパラメータ">
-        <label class="lab-slider"><span class="mina-caption">lensWarp</span><input type="range" min="0" max="0.3" step="0.005" value="0.10" data-lab-param="lensWarp"><output>0.10</output></label>
+        <label class="lab-slider"><span class="mina-caption">lensWarp</span><input type="range" min="0" max="0.3" step="0.005" value="0.14" data-lab-param="lensWarp"><output>0.14</output></label>
         <label class="lab-slider"><span class="mina-caption">refraction</span><input type="range" min="0" max="0.6" step="0.01" value="0.34" data-lab-param="refraction"><output>0.34</output></label>
         <label class="lab-slider"><span class="mina-caption">edgeWidth</span><input type="range" min="0.05" max="0.5" step="0.01" value="0.2" data-lab-param="edgeWidth"><output>0.2</output></label>
         <label class="lab-slider"><span class="mina-caption">blur</span><input type="range" min="0" max="25" step="1" value="2" data-lab-param="blur"><output>2</output></label>
@@ -231,9 +231,9 @@
       /* Presets. V2 Reference approximates the legacy (uv-center)*0.18
        * behavior through the lensWarp stage (0.18 at the rim). */
       var PRESETS = {
-        natural:     { lensWarp: 0.10, refraction: 0.34, edgeWidth: 0.20, blur: 2, fresnel: 0.16, specular: 0.12, dispersion: 0.02, maxRefractionPx: 40 },
+        natural:     { lensWarp: 0.14, refraction: 0.34, edgeWidth: 0.20, blur: 2, fresnel: 0.16, specular: 0.12, dispersion: 0.02, maxRefractionPx: 40 },
         soft:        { lensWarp: 0.05, refraction: 0.24, edgeWidth: 0.16, blur: 3, fresnel: 0.14, specular: 0.10, dispersion: 0.015, maxRefractionPx: 32 },
-        strong:      { lensWarp: 0.20, refraction: 0.42, edgeWidth: 0.24, blur: 2, fresnel: 0.18, specular: 0.14, dispersion: 0.03, maxRefractionPx: 48 },
+        strong:      { lensWarp: 0.27, refraction: 0.42, edgeWidth: 0.24, blur: 2, fresnel: 0.18, specular: 0.14, dispersion: 0.03, maxRefractionPx: 48 },
         performance: { lensWarp: 0.08, refraction: 0.28, edgeWidth: 0.18, blur: 2, fresnel: 0.12, specular: 0.10, dispersion: 0, maxRefractionPx: 32 },
         v2:          { lensWarp: 0.18, refraction: 0.55, edgeWidth: 0.30, blur: 0, fresnel: 0.10, specular: 0.08, dispersion: 0, maxRefractionPx: 60 }
       };

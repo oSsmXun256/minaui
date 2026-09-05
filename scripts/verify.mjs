@@ -1151,8 +1151,8 @@ async function testDisplacementProfile() {
   // Natural apparent magnification mid-band
   const easeMid = 0.4 + 0.6 * Math.pow(0.5, 1.4);
   const magFactor = 1 / (1 - lensWarp * easeMid);
-  assert(magFactor >= 1.05 && magFactor <= 1.10,
-    `Natural magnification factor must be ~5-10% (got ${(magFactor * 100 - 100).toFixed(1)}%, lensWarp=${lensWarp})`);
+  assert(magFactor >= 1.09 && magFactor <= 1.10,
+    `Natural mid-band magnification factor must be ~9-10% (got ${(magFactor * 100 - 100).toFixed(1)}%, lensWarp=${lensWarp})`);
 
   // Displacement at mid must be a meaningful fraction of the interior size
   assert(dMid.lensX < -5, `mid-band warp displacement must be clearly visible (got ${(-dMid.lensX).toFixed(2)}px on a 400px card)`);
@@ -1175,7 +1175,7 @@ async function testDisplacementProfile() {
   assert(flips === 0, `lens warp direction must not flip inside the interior (got ${flips} flips)`);
 
   // ---- Preset strength ordering: Soft < Natural < Strong ~ V2-grade ----
-  const SOFT = 0.05, NATURAL = DEFAULT_GLASS.lensWarp, STRONG = 0.20, V2REF = 0.18;
+  const SOFT = 0.05, NATURAL = DEFAULT_GLASS.lensWarp, STRONG = 0.27, V2REF = 0.18;
   const warpAt = (warp) => Math.abs(displacement(140, 0, halfW, halfH, 40, warp).lensX);
   const softD = warpAt(SOFT), natD = warpAt(NATURAL), strongD = warpAt(STRONG), v2D = warpAt(V2REF);
   assert(softD < natD, `Soft (${softD.toFixed(1)}px) must be weaker than Natural (${natD.toFixed(1)}px)`);
@@ -1217,12 +1217,12 @@ async function testMagnificationProfile() {
   const lensY = -py * warpAmtY;
   assert(lensY < 0, 'y-axis must also warp inward');
 
-  // Natural default in the 5-9.5% band; Strong (demo preset) 12-16%
+  // Natural default in the 10-13% band; Strong (demo preset) 23-28%
   const factorAt = (warp) => 1 / (1 - warp * (0.4 + 0.6 * Math.pow(0.7, 1.4)));
   const nat = factorAt(lensWarp);
-  assert(nat >= 1.05 && nat <= 1.095, `Natural magnification must sit in 5-9.5% (got ${(nat * 100 - 100).toFixed(1)}%)`);
-  const strong = factorAt(0.20);
-  assert(strong >= 1.12 && strong <= 1.19, `Strong magnification must sit in 12-19% (got ${(strong * 100 - 100).toFixed(1)}%)`);
+  assert(nat >= 1.10 && nat <= 1.13, `Natural magnification must sit in 10-13% (got ${(nat * 100 - 100).toFixed(1)}%)`);
+  const strong = factorAt(0.27);
+  assert(strong >= 1.23 && strong <= 1.28, `Strong magnification must sit in 23-28% (got ${(strong * 100 - 100).toFixed(1)}%)`);
 }
 
 /** The rVFC handler must re-register itself after every fired frame; a stale

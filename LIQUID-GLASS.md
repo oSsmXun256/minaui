@@ -57,7 +57,7 @@ MinaLiquid が参照できるのは、**レンダラ自身が管理する Scene*
 | `video` | 動画 (`{ type: "video", src: "/bg.mp4" }` または `el`) |
 | `canvas` | 2D canvas 要素 (`{ type: "canvas", el: canvasEl }`) ・動的更新は `invalidateScene()` |
 | `gradient` | レンダラー所有のグラデーション生成 (`stops`, `angle`) |
-| `css-background` | 対象要素の背景を Texture 化。**対応範囲は厳密に以下のみ**: 単一 `url()` + `background-size: cover` + `background-position: center` + `background-repeat: no-repeat` (`{ type: "css-background", target: document.body }`)。それ以外 (複数レイヤー・gradient・repeat・contain・任意の size・任意の position) は明示的に **unsupported** として scene failed にする (誤描画しない)。画像は onload + decode が完了するまで採用されない (loading 中は CSS fallback が維持される) |
+| `css-background` | 対象要素の背景を Texture 化。**対応範囲は厳密に以下のみ**: 単一 `url()` + `background-size: cover` + `background-position: center` + `background-repeat: no-repeat` (`{ type: "css-background", target: document.body }`)。`target` の rect は viewport と上下左右・幅高が **1 CSS px 以内で一致**する必要があり、任意の要素サイズは unsupported。その他 (複数レイヤー・gradient・repeat・contain・任意の size・任意の position) も明示的に **unsupported** として scene failed にする (誤描画しない)。画像は onload + decode が完了するまで採用されない (loading 中は CSS fallback が維持される) |
 | `sceneProvider` | 動的な Scene を描く `{ render(ctx, state) }` (下記) |
 
 DOM を capture しているわけでは**ありません**。Liquid Glass の背後に置くのは、この Scene を描画した WebGL キャンバス(またはCSS側で同じ画像を敷いた背景)である必要があります。
@@ -187,8 +187,8 @@ finalDisplacement = lensWarp + edgeRefraction   (合成後の合計を cap)
 | preset | `lensWarp` | 中間帯の見かけ倍率 | rim 寄り |
 | :-- | :-- | :-- | :-- |
 | Soft | 0.05 | ~3.4% | ~5.5% |
-| **Natural (既定)** | **0.10** | **~6.7%** | **~11%** |
-| Strong | 0.20 | ~14% | ~22% |
+| **Natural (既定)** | **0.14** | **~12%** | **~15%** |
+| Strong | 0.27 | ~26% | ~29% |
 | V2 Reference | 0.18 | rim で最大 ~18% 相当 | ~18% |
 
 ```text
@@ -201,7 +201,7 @@ finalDisplacement = lensWarp + edgeRefraction   (合成後の合計を cap)
 
 人間が「透明な厚みのあるガラス」を認識する手がかりは blur ではなく **背景の歪み** です:
 
-1. **背景が明確に少し拡大される** — 中間帯 ~6.7% の倍率は、Grid の線の間隔がガラス内で目に見えて広がるため「そこに厚いレンズがある」と知覚される (V3.1 の中央完全フラット + V3.2 の ~3% は弱すぎた)
+1. **背景が明確に少し拡大される** — 中間帯 ~12% の倍率は、Grid の線の間隔がガラス内で目に見えて広がるため「そこに厚いレンズがある」と知覚される (V3.1 の中央完全フラット + V3.2 の ~3% は弱すぎた)
 2. **境界を跨ぐ直線が位置ズレする** — lensWarp によりガラス内の線は外側と連続しない
 3. **エッジで背景が曲がる** — エッジ屈折は外側の背景を引き込むため、境界で直線が明確に折れる
 4. **方向性のあるハイライト** — 全周均一の白縁ではなく、左上光源の specular/Fresnel のみ
@@ -262,7 +262,7 @@ lod = blurLod * (1 - centerBlur * inset) + edgeBlur * t²
 
 | parameter | 既定 | 意図 |
 | :-- | :-- | :-- |
-| `lensWarp` | `0.10` | **主役**。中間帯 ~6.7% / rim ~11% の見かけ倍率 |
+| `lensWarp` | `0.14` | **主役**。中間帯 ~12% / rim ~15% の見かけ倍率 |
 | `refraction` | `0.34` | エッジ屈折 |
 | `blur` | `2` | 背景情報を残す軽い透過 blur (1〜3px 相当) |
 | `centerBlur` | `0.6` | 中央の LOD 減衰率 (すりガラス化防止) |
@@ -273,7 +273,7 @@ lod = blurLod * (1 - centerBlur * inset) + edgeBlur * t²
 | `edgeBlur` | `0.5` | エッジへの blur 増加 |
 | `maxRefractionPx` | `40` | 合成変位の安全上限 (design px) |
 
-**強すぎる distortion を避ける理由**: `lensWarp` を 0.3 を超えて上げると、ガラスではなく「水滴 / 魚眼レンズ / ワープエフェクト」に見えます。MinaUI は UI ライブラリであり、訴求点は「透明な厚みのある上質なガラス」です。Strong preset (lensWarp 0.20 / 中間 ~14%) が実用上限、V2 Reference preset (0.30 相当) は比較用の限界値と考えてください。
+**強すぎる distortion を避ける理由**: `lensWarp` を 0.3 を超えて上げると、ガラスではなく「水滴 / 魚眼レンズ / ワープエフェクト」に見えます。MinaUI は UI ライブラリであり、訴求点は「透明な厚みのある上質なガラス」です。Strong preset (lensWarp 0.27 / 中間 ~26%) が実用上限、V2 Reference preset (0.30 相当) は比較用の限界値と考えてください。
 
 ### Recommended presets (Demo の Natural / Soft / Strong / Performance / V2)
 
@@ -281,7 +281,7 @@ Demo (`demo/index.html`) の preset ボタンは上記思想をそのまま反�
 
 - **Natural** (推奨既定値と同一) — 「開いた瞬間にこれが MinaLiquid と分かる」展示状態
 - **Soft** — 控えめ。テキスト多い面向け (~3-5%)
-- **Strong** — 実用上限。V2 の「ぐにゃん」に近い魅力 (~12-16%)
+- **Strong** — 実用上限。V2 の「ぐにゃん」に近い魅力 (~23-28%)
 - **Performance** — 低負荷向け (mip-only + dispersion 0)
 - **V2 Reference** — 旧 V2 相当の強い warp での一時比較用 (maxRefractionPx 60)
 
@@ -358,7 +358,7 @@ const liquid = new MinaLiquid({
   maxElements: 8,               // 同時追跡する liquid 要素数 (最大16)
   maxRefractionPx: 40,          // 屈折変位 (lensWarp + edge 合成) の安全上限
   glass: {
-    lensWarp: 0.10,            // 主役: 内部レンズ倍率 (中間帯 ~6.7%)
+    lensWarp: 0.14,            // 主役: 内部レンズ倍率 (中間帯 ~12%)
     refraction: 0.34,          // 縁の屈折量
     blur: 2,                   // 透過blur (design px → LOD)。軽く
     centerBlur: 0.6,           // 中央の blur 減衰 (背景情報を残す)
@@ -498,8 +498,8 @@ Test:     通常の glass 設定
 Grid scene (35px 間隔の縦線) に対する実測 (相関 shift):
 
 ```text
-Natural (lensWarp 0.10): mid-band ~8.5px 変位 (中間帯 ~6.7% の見かけ倍率)
-Strong  (lensWarp 0.20): ~12px
+Natural (lensWarp 0.14): mid-band ~12px 変位 (中間帯 ~12% の見かけ倍率)
+Strong  (lensWarp 0.27): ~15px
 V2 ref  (lensWarp 0.30): ~15px
 ```
 
