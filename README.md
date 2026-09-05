@@ -1,5 +1,7 @@
 # MinaUI
 
+**Version: 1.1.0**
+
 MinaUI は、Web サイト・ダッシュボード・ポートフォリオ・ランディングページまで同じ API で組み立てられる、依存関係のない汎用 CSS / JS UI フレームワークです。
 
 **Design Philosophy**: 「暗い背景に浮かぶ、質感のある面」を軸に、Pink / Violet / Glass のビジュアルアイデンティティを維持しつつ、面の階層(Surface → Frosted Glass → Liquid Glass)を明確に分離します。Glass / Glow は乱用せず、必要な面にだけ掛けることで、高級感・未来感と性能・可読性を両立させます。

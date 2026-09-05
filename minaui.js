@@ -1,5 +1,5 @@
 /*!
- * MinaUI v0.2.0
+ * MinaUI v1.1.0
  * Small, dependency-free behavior helpers for MinaUI components.
  * Copyright (c) 2026 oSsmXun
  * Released under the MIT License.
@@ -23,7 +23,7 @@
   ].join(",");
 
   var MinaUI = {
-    version: "0.2.0",
+    version: "1.1.0",
     _initialized: false,
 
     _focusable: function (container) {
