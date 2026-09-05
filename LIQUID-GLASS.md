@@ -23,6 +23,8 @@ new MinaLiquid({ sceneMode: 'overlay', ... })
 
 **WebGL は任意の DOM を capture できません。** どちらのモードでも屈折されるのは レンダラが管理する Scene (image / video / canvas / gradient / css-background / sceneProvider) だけです。overlay モードは「背景全体を WebGL に置き換えずに liquid を載せる」ための合成設計であり、DOM screenshot ではありません。
 
+overlay モードの alpha 契約は厳密です: **ガラス境界の外側 (+1px 以上) は alpha = 0** が保証されます (AA 境界の1px 以内のみ coverage alpha)。ガラスの外側へのコンタクトシャドウが必要な場合は、Scene alpha を漏らすのではなく **CSS 側の box-shadow** 等で表現してください。
+
 モード切替は `setSceneMode()` または `sceneMode` オプションで。切替時は canvas を明示クリアし、前モードの不透明ピクセルが残らないことを保証します。
 
 ---
@@ -53,9 +55,9 @@ MinaLiquid が参照できるのは、**レンダラ自身が管理する Scene*
 | :-- | :-- |
 | `image` | 画像URL (`{ type: "image", src: "/bg.jpg" }`) |
 | `video` | 動画 (`{ type: "video", src: "/bg.mp4" }` または `el`) |
-| `canvas` | 2D canvas 要素 (`{ type: "canvas", el: canvasEl }`) — 動的更新は `invalidateScene()` |
-| `gradient` | レンダラ内蔵のグラデーション生成 (`stops`, `angle`) |
-| `css-background` | 対象要素の **単一 url() 背景** を cover/center/no-repeat のみで解釈して Texture 化 (`{ type: "css-background", target: document.body }`)。複数レイヤー・グラデーション・repeat は明示的に unsupported として scene failed にする (誤描画しない) |
+| `canvas` | 2D canvas 要素 (`{ type: "canvas", el: canvasEl }`) ・動的更新は `invalidateScene()` |
+| `gradient` | レンダラー所有のグラデーション生成 (`stops`, `angle`) |
+| `css-background` | 対象要素の背景を Texture 化。**対応範囲は厳密に以下のみ**: 単一 `url()` + `background-size: cover` + `background-position: center` + `background-repeat: no-repeat` (`{ type: "css-background", target: document.body }`)。それ以外 (複数レイヤー・gradient・repeat・contain・任意の size・任意の position) は明示的に **unsupported** として scene failed にする (誤描画しない)。画像は onload + decode が完了するまで採用されない (loading 中は CSS fallback が維持される) |
 | `sceneProvider` | 動的な Scene を描く `{ render(ctx, state) }` (下記) |
 
 DOM を capture しているわけでは**ありません**。Liquid Glass の背後に置くのは、この Scene を描画した WebGL キャンバス(またはCSS側で同じ画像を敷いた背景)である必要があります。

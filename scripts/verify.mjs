@@ -1355,8 +1355,10 @@ async function testLensBulgeShaderContract() {
     assert(source.includes(needle), `composite shader must contain "${needle}"`);
   }
   // scene-mode alpha contracts
-  assert(source.includes("float aOut = max(covOut, haloOut * 0.85) * sceneAlpha;"),
-    "overlay mode must emit coverage-based alpha (glass only)");
+  assert(source.includes("float aOut = covOut * sceneAlpha;"),
+    "overlay mode must emit coverage-based alpha ONLY (glass region, no halo)");
+  assert(!source.includes("haloOut"),
+    "overlay mode must never leak scene alpha/pixels outside the glass via a halo");
   assert(source.includes("outColor = vec4(color * aOut, aOut);"),
     "overlay mode must premultiply the color by coverage alpha");
   assert(source.includes("outColor = vec4(color * sceneAlpha, sceneAlpha);"),
@@ -1574,7 +1576,9 @@ async function testSceneModeSwitch() {
   liquid.destroy();
 }
 
-/** css-background source: supported simple case parses + loads. */
+/** css-background source: supported simple case parses + loads.
+ * The FakeImage starts EXACTLY like a real browser: naturalWidth=0,
+ * naturalHeight=0, complete=false — pixels appear only after onload. */
 async function testCssBackgroundSource() {
   const build = buildGlassEnvironment({ liquidCount: 1 });
   const images = [];
@@ -1585,11 +1589,12 @@ async function testCssBackgroundSource() {
     this.onload = null;
     this.onerror = null;
     this._src = '';
+    this.naturalWidth = 0;
+    this.naturalHeight = 0;
     Object.defineProperty(this, 'src', {
       get() { return this._src; },
       set(v) { this._src = String(v); }
     });
-    this.naturalWidth = 800; this.naturalHeight = 600;
     images.push(this);
   };
   const fakeStyles = {
@@ -1607,22 +1612,40 @@ async function testCssBackgroundSource() {
   assert(images.length === 1, 'the css url() must be loaded as an Image');
   assert(images[0]._src === 'stars.jpg', 'the url must be extracted from the computed style');
   assert(liquid.getSceneState() === 'loading', 'css-background starts loading');
-  // resolve the load
+  assert(liquid._sourceEl === null, 'loading image must NOT be adopted as the source element');
+
+  // Real-browser race: RAFs pass BEFORE onload -> still loading, never failed
+  drainRaf(rafQueue, 6);
+  assert(liquid.getSceneState() === 'loading',
+    'RAF frames before onload must keep the scene loading (not failed)');
+  assert(els[0].classList.contains('mina-liquid-gl') === false,
+    'no GL class while the css-background image is still loading');
+
+  // pixels arrive: only now may the scene promote
+  images[0].naturalWidth = 800;
+  images[0].naturalHeight = 600;
   images[0].complete = true;
-  images[0].onload && images[0].onload();
-  drainRaf(rafQueue, 3);
-  assert(liquid.getSceneState() === 'ready', 'css-background image must promote the scene');
+  images[0].onload && await images[0].onload();
+  drainRaf(rafQueue, 4);
+  assert(liquid.getSceneState() === 'ready', 'css-background image must promote the scene after onload');
+  assert(liquid._sourceEl === images[0], 'onload+decode must adopt the image element');
   assert(els[0].classList.contains('mina-liquid-gl') === true, 'GL class after css-background ready');
   liquid.destroy();
 }
 
-/** css-background: unsupported backgrounds fail cleanly (no mis-draw). */
+/** css-background: values outside the supported contract (single url() +
+ * cover + center + no-repeat) fail cleanly — nothing is silently mis-drawn. */
 async function testCssBackgroundUnsupported() {
   const cases = [
     { backgroundImage: 'linear-gradient(red, blue), url(a.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
     { backgroundImage: 'url(a.jpg), url(b.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
     { backgroundImage: 'url(a.jpg)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'repeat' },
-    { backgroundImage: 'url(a.jpg)', backgroundSize: 'auto auto', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }
+    { backgroundImage: 'url(a.jpg)', backgroundSize: 'auto auto', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'url(a.jpg)', backgroundSize: 'contain', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'url(a.jpg)', backgroundSize: 'cover', backgroundPosition: 'left top', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'url(a.jpg)', backgroundSize: 'cover', backgroundPosition: '30% 70%', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'url(a.jpg)', backgroundSize: '800px 600px', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' },
+    { backgroundImage: 'linear-gradient(#111, #eee)', backgroundSize: 'cover', backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }
   ];
   for (const fakeStyles of cases) {
     const build = buildGlassEnvironment({ liquidCount: 1 });
@@ -1632,7 +1655,7 @@ async function testCssBackgroundUnsupported() {
     const target = { getBoundingClientRect: () => ({ width: 1280, height: 800 }) };
     const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'css-background', target } });
     drainRaf(rafQueue, 3);
-    assert(liquid.getSceneState() === 'failed', `unsupported background must fail cleanly (${fakeStyles.backgroundImage.slice(0, 30)})`);
+    assert(liquid.getSceneState() === 'failed', `unsupported background must fail cleanly (${fakeStyles.backgroundImage.slice(0, 30)} + size=${fakeStyles.backgroundSize} pos=${fakeStyles.backgroundPosition})`);
     assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class for unsupported css-background');
     liquid.destroy();
   }
@@ -1696,21 +1719,83 @@ async function testSceneProvider() {
   liquid.destroy();
 }
 
-/** sceneProvider failure: throwing provider fails the scene, DOM background
- * (i.e., the CSS surface) stays visible; nothing becomes black/transparent. */
+/** sceneProvider failure: throwing provider fails the scene ONCE, keeps the
+ * failed state, drains the RAF queue and never renders again (no infinite
+ * retry loop). DOM background (the CSS surface) stays visible. */
 async function testSceneProviderFailure() {
   const build = buildGlassEnvironment({ liquidCount: 1 });
   const { els, rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  let calls = 0;
   const provider = {
-    render() { throw new Error('boom'); }
+    render() { calls++; throw new Error('boom'); }
   };
   const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'sceneProvider', provider } });
-  drainRaf(rafQueue, 3);
+  drainRaf(rafQueue, 10);
   assert(liquid.getSceneState() === 'failed', 'throwing provider must fail the scene');
+  assert(calls === 1, `throwing provider must render exactly once, got ${calls}`);
+  assert(liquid.backend !== 'webgl' || liquid.getContext() !== null, 'renderer survives; the SCENE failed, not the GL context');
   assert(els[0].classList.contains('mina-liquid-gl') === false, 'no GL class after provider failure');
   assert(els[0].classList.contains('mina-liquid-static') === true || els[0].classList.contains('mina-liquid-native') === true,
     'provider failure must keep the CSS surface');
+
+  // the RAF queue must drain completely (a self-rescheduling retry would
+  // keep enqueueing frames forever)
+  drainRaf(rafQueue, 3);
+  assert(rafQueue.length === 0, 'RAF queue must be empty after provider failure (no retry loop)');
+  assert(calls === 1, 'provider.render must not be called again after the failure');
+  assert(liquid.getSceneState() === 'failed', 'provider failure must KEEP the failed state');
+
+  // even a direct dirty frame must not re-run the provider (defense in depth)
+  const callsBefore = calls;
+  liquid._sceneDirty = true;
+  liquid._frame();
+  assert(calls === callsBefore, 'a dirty frame after failure must NOT re-run the provider');
+  assert(liquid.getSceneState() === 'failed', 'scene state must remain failed after a dirty frame');
   liquid.destroy();
+}
+
+/** Provider failure ordering: the initial _setupSceneProvider draw must not
+ * transition failed -> loading. A provider that throws on the SECOND draw
+ * (after the scene is live) must also stay failed, never resurrect. */
+async function testProviderFailureKeepsFailedState() {
+  // throwing immediately at setSource time: state must go straight to failed
+  const build = buildGlassEnvironment({ liquidCount: 1 });
+  const { rafQueue, MinaLiquid } = bootGlassWithGL(build);
+  let calls = 0;
+  const liquid = new MinaLiquid({ backend: 'webgl', source: { type: 'sceneProvider', provider: {
+    render() { calls++; throw new Error('instant boom'); }
+  } } });
+  assert(liquid.getSceneState() === 'failed', 'immediate throw must end in failed');
+  assert(calls === 1, 'immediate throw must call the provider once');
+  drainRaf(rafQueue, 6);
+  assert(liquid.getSceneState() === 'failed', 'failed state must persist (no failed->loading transition)');
+  assert(rafQueue.length === 0, 'no self-rescheduling RAFs');
+  liquid.destroy();
+
+  // throws on a later draw: live scene -> failure mid-flight must stick too
+  const build2 = buildGlassEnvironment({ liquidCount: 1 });
+  const { els, rafQueue: raf2, MinaLiquid: ML2 } = bootGlassWithGL(build2);
+  let calls2 = 0;
+  let shouldThrow = false;
+  const liquid2 = new ML2({ backend: 'webgl', source: { type: 'sceneProvider', provider: {
+    render(ctx, state) {
+      calls2++;
+      if (shouldThrow) throw new Error('later boom');
+      ctx.fillRect(0, 0, state.width, state.height);
+    }
+  } } });
+  drainRaf(raf2, 3);
+  assert(liquid2.getSceneState() === 'ready', 'precondition: scene ready before the mid-flight throw');
+  shouldThrow = true;
+  liquid2.invalidateScene();
+  drainRaf(raf2, 6);
+  assert(liquid2.getSceneState() === 'failed', 'mid-flight provider throw must fail the scene');
+  const callsAtFailure = calls2;
+  drainRaf(raf2, 6);
+  assert(raf2.length === 0, 'mid-flight failure must drain the RAF queue');
+  assert(calls2 === callsAtFailure, 'no provider re-runs after the mid-flight failure');
+  assert(els[0].classList.contains('mina-liquid-gl') === false, 'GL class must drop after mid-flight failure');
+  liquid2.destroy();
 }
 
 /** invalidateScene on a dynamic canvas source: re-uploads only when dirty. */
@@ -1822,6 +1907,7 @@ const tests = [
   ["css-background: cover/center mapping math", testCssBackgroundCoverMath],
   ["sceneProvider: render + dirty-driven redraw", testSceneProvider],
   ["sceneProvider: throwing provider fails cleanly", testSceneProviderFailure],
+  ["sceneProvider: failure keeps failed state (no retry loop)", testProviderFailureKeepsFailedState],
   ["Dynamic canvas source: invalidateScene re-uploads once", testDynamicCanvasDirtyRedraw],
   ["Video A queued rVFC -> video B: stale callback isolated", testVideoStaleCallbackIsolation],
   ["Context lost -> frosted -> restored re-earn", testContextLostRestoreCycle]

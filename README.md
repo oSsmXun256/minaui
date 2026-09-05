@@ -200,6 +200,8 @@ v0.3.0 から Liquid Glass は **MinaLiquid V3** — 描画原理から再設計
 
 どちらのモードでも屈折できるのは レンダラ管理の Scene (image / video / canvas / gradient / **css-background** / **sceneProvider**) のみです。**WebGL は任意の DOM を capture できません** (backdrop-filter と同じ、ではない)。
 
+`css-background` の対応範囲は厳密に **単一 url() + cover + center + no-repeat** のみです (それ以外の multi-layer / gradient / repeat / contain / 任意 size / 任意 position は scene failed として明示的に拒否)。overlay モードではガラス境界 +1px 以外は alpha = 0 が保証されます (外側の影は CSS 側 box-shadow で)。
+
 ```js
 const liquid = new MinaLiquid({
   source: { type: "image", src: "/background.jpg" },
